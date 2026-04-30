@@ -6,6 +6,7 @@
 //  Copyright © 2024 Moonlight Game Streaming Project. All rights reserved.
 //
 
+import AppKit
 import SwiftUI
 
 enum SettingsPaneType: Int, CaseIterable {
@@ -483,10 +484,177 @@ struct InputView: View {
                     Divider()
 
                     ToggleCell(title: "Parsec Mouse Mode", boolBinding: $settingsModel.parsecMouseMode)
+
+                    Divider()
+
+                    ParsecMouseShortcutCell()
                 }
             }
             .padding()
         }
+    }
+}
+
+struct ParsecMouseShortcutCell: View {
+    @EnvironmentObject private var settingsModel: SettingsModel
+    @SwiftUI.State private var isRecording = false
+
+    var body: some View {
+        FormCell(title: "Parsec Mouse Shortcut", contentWidth: 260, content: {
+            HStack(spacing: 8) {
+                Text(isRecording ? "Hold shortcut keys..." : settingsModel.parsecMouseShortcutDisplay)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(isRecording ? "Cancel" : "Register New") {
+                    isRecording.toggle()
+                }
+                .buttonStyle(.bordered)
+            }
+            .background(Group {
+                if isRecording {
+                    ShortcutCaptureView(
+                        onComplete: { keyCode, modifierMask in
+                            settingsModel.parsecMouseShortcutKeyCode = keyCode
+                            settingsModel.parsecMouseShortcutModifierMask = modifierMask
+                            settingsModel.parsecMouseShortcutDisplay = SettingsModel.displayString(
+                                keyCode: keyCode,
+                                modifierMask: modifierMask
+                            )
+                            isRecording = false
+                        },
+                        onCancel: {
+                            isRecording = false
+                        }
+                    )
+                    .frame(width: 0, height: 0)
+                }
+            })
+        })
+    }
+}
+
+struct ShortcutCaptureView: NSViewRepresentable {
+    let onComplete: (Int, UInt) -> Void
+    let onCancel: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ShortcutCaptureNSView()
+        context.coordinator.start()
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.start()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete, onCancel: onCancel)
+    }
+
+    final class Coordinator {
+        private let onComplete: (Int, UInt) -> Void
+        private let onCancel: () -> Void
+        private var monitor: Any?
+        private var pressedKeyCodes = Set<UInt16>()
+        private var capturedKeyCode: Int?
+        private var capturedModifierMask: UInt = 0
+
+        init(onComplete: @escaping (Int, UInt) -> Void, onCancel: @escaping () -> Void) {
+            self.onComplete = onComplete
+            self.onCancel = onCancel
+        }
+
+        func start() {
+            guard monitor == nil else {
+                return
+            }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+                self?.handle(event)
+                return nil
+            }
+        }
+
+        func stop() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func handle(_ event: NSEvent) {
+            let modifierFlags = Self.shortcutModifierFlags(from: event)
+
+            switch event.type {
+            case .keyDown:
+                if event.keyCode == 53 {
+                    cancel()
+                    return
+                }
+
+                pressedKeyCodes.insert(event.keyCode)
+                capturedKeyCode = Int(event.keyCode)
+                if modifierFlags != 0 {
+                    capturedModifierMask = modifierFlags
+                }
+
+            case .keyUp:
+                pressedKeyCodes.remove(event.keyCode)
+                if modifierFlags != 0 {
+                    capturedModifierMask = modifierFlags
+                }
+                completeIfReleased(currentModifierMask: modifierFlags)
+
+            case .flagsChanged:
+                if modifierFlags != 0 {
+                    capturedModifierMask = modifierFlags
+                }
+                completeIfReleased(currentModifierMask: modifierFlags)
+
+            default:
+                break
+            }
+        }
+
+        private func completeIfReleased(currentModifierMask: UInt) {
+            guard pressedKeyCodes.isEmpty, currentModifierMask == 0, let capturedKeyCode else {
+                return
+            }
+
+            let finalModifierMask = capturedModifierMask
+            stop()
+            DispatchQueue.main.async {
+                self.onComplete(capturedKeyCode, finalModifierMask)
+            }
+        }
+
+        private func cancel() {
+            stop()
+            DispatchQueue.main.async {
+                self.onCancel()
+            }
+        }
+
+        private static func shortcutModifierFlags(from event: NSEvent) -> UInt {
+            let allowedFlags: NSEvent.ModifierFlags = [.shift, .control, .option, .command, .function]
+            return (event.modifierFlags.intersection(allowedFlags)).rawValue
+        }
+    }
+}
+
+final class ShortcutCaptureNSView: NSView {
+    override var acceptsFirstResponder: Bool {
+        true
     }
 }
 

@@ -781,6 +781,12 @@ static void decompressionOutputCallback(void *decompressionOutputRefCon,
     }
 
     VTSessionSetProperty(_decompressionSession, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
+    VTSessionSetProperty(_decompressionSession, kVTDecompressionPropertyKey_MaximizePowerEfficiency, kCFBooleanFalse);
+    if (@available(macOS 11.3, *)) {
+        VTSessionSetProperty(_decompressionSession,
+                             kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                             kCFBooleanTrue);
+    }
     return YES;
 }
 

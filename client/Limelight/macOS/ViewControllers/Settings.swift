@@ -29,6 +29,10 @@ struct Settings: Encodable, Decodable {
     let controllerDriver: Int
     let mouseDriver: Int
     let parsecMouseMode: Bool?
+    let parsecMouseShortcut: Int?
+    let parsecMouseShortcutKeyCode: Int?
+    let parsecMouseShortcutModifierMask: UInt?
+    let parsecMouseShortcutDisplay: String?
     
     let emulateGuide: Bool
     let windowsCtrlSource: Int?
@@ -79,6 +83,10 @@ class SettingsClass: NSObject {
                     "controllerDriver": settings.controllerDriver,
                     "mouseDriver": settings.mouseDriver,
                     "parsecMouseMode": settings.parsecMouseMode ?? SettingsModel.defaultParsecMouseMode,
+                    "parsecMouseShortcut": settings.parsecMouseShortcut ?? SettingsModel.defaultParsecMouseShortcutIndex,
+                    "parsecMouseShortcutKeyCode": settings.parsecMouseShortcutKeyCode ?? SettingsModel.defaultParsecMouseShortcutKeyCode,
+                    "parsecMouseShortcutModifierMask": settings.parsecMouseShortcutModifierMask ?? SettingsModel.defaultParsecMouseShortcutModifierMask,
+                    "parsecMouseShortcutDisplay": settings.parsecMouseShortcutDisplay ?? SettingsModel.defaultParsecMouseShortcut,
                     "emulateGuide": settings.emulateGuide,
                     "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
                     "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
@@ -186,6 +194,40 @@ class SettingsClass: NSObject {
         }
 
         return SettingsModel.defaultParsecMouseMode
+    }
+
+    @objc static func parsecMouseShortcutKeyCode(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key), let keyCode = settings.parsecMouseShortcutKeyCode {
+            return keyCode
+        }
+
+        let shortcutIndex = parsecMouseShortcutIndex(for: key)
+        if SettingsModel.parsecMouseShortcutKeyCodes.indices.contains(shortcutIndex) {
+            return SettingsModel.parsecMouseShortcutKeyCodes[shortcutIndex]
+        }
+
+        return SettingsModel.defaultParsecMouseShortcutKeyCode
+    }
+
+    @objc static func parsecMouseShortcutModifierFlags(for key: String) -> UInt {
+        if let settings = Settings.getSettings(for: key), let modifierMask = settings.parsecMouseShortcutModifierMask {
+            return modifierMask
+        }
+
+        let shortcutIndex = parsecMouseShortcutIndex(for: key)
+        if SettingsModel.parsecMouseShortcutModifierMasks.indices.contains(shortcutIndex) {
+            return SettingsModel.parsecMouseShortcutModifierMasks[shortcutIndex]
+        }
+
+        return SettingsModel.defaultParsecMouseShortcutModifierMask
+    }
+
+    private static func parsecMouseShortcutIndex(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseShortcut ?? SettingsModel.defaultParsecMouseShortcutIndex
+        }
+
+        return SettingsModel.defaultParsecMouseShortcutIndex
     }
     
     @objc static func appArtworkDimensions(for key: String) -> CGSize {

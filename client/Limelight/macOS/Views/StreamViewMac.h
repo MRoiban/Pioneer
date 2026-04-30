@@ -17,5 +17,7 @@
 - (void)updateHostCursorImage:(NSImage *)image hotspot:(NSPoint)hotspot visible:(BOOL)visible;
 - (void)moveHostCursorToPoint:(NSPoint)point;
 - (void)setHostCursorVisible:(BOOL)visible;
+- (void)showDebugMessage:(NSString *)message duration:(NSTimeInterval)duration;
+- (void)toggleStatsOverlay:(NSString *)message;
 
 @end

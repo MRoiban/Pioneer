@@ -1624,8 +1624,37 @@ namespace input {
    * @brief Called on the control stream thread to queue an input message.
    * @param input The input context pointer.
    * @param input_data The input message.
+   *
+   * Fast path: mouse-move packets are injected directly on the control
+   * thread so the OS cursor advances between video capture frames instead
+   * of waiting for the task pool to pick up a queued message.
    */
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data) {
+    if (input_data.size() >= sizeof(NV_INPUT_HEADER)) {
+      auto header = (PNV_INPUT_HEADER) input_data.data();
+      auto magic = util::endian::little(header->magic);
+
+      bool queue_empty = false;
+      {
+        std::lock_guard<std::mutex> lg(input->input_queue_lock);
+        queue_empty = input->input_queue.empty();
+      }
+
+      if (queue_empty) {
+        if (magic == MOUSE_MOVE_ABS_MAGIC) {
+          if (input_data.size() >= sizeof(NV_ABS_MOUSE_MOVE_PACKET)) {
+            passthrough(input, (PNV_ABS_MOUSE_MOVE_PACKET) input_data.data());
+            return;
+          }
+        } else if (magic == MOUSE_MOVE_REL_MAGIC_GEN5) {
+          if (input_data.size() >= sizeof(NV_REL_MOUSE_MOVE_PACKET)) {
+            passthrough(input, (PNV_REL_MOUSE_MOVE_PACKET) input_data.data());
+            return;
+          }
+        }
+      }
+    }
+
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
       input->input_queue.push_back(std::move(input_data));

@@ -154,6 +154,26 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var selectedParsecMouseShortcut: String {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseShortcutKeyCode: Int {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseShortcutModifierMask: UInt {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseShortcutDisplay: String {
+        didSet {
+            saveSettings()
+        }
+    }
 
     @Published var emulateGuide: Bool {
         didSet {
@@ -241,6 +261,21 @@ class SettingsModel: ObservableObject {
     static var controllerDrivers: [String] = ["HID", "MFi"]
     static var mouseDrivers: [String] = ["HID", "MFi", "Raw HID"]
     static var keyboardModifierSources: [String] = ["Control", "Shift", "Option", "Command", "Fn"]
+    static var parsecMouseShortcutOptions: [String] = [
+        "Control + Option + M",
+        "Control + Option + P",
+        "Control + Option + R",
+        "Control + Option + Space",
+        "Control + Option + Command + M"
+    ]
+    static var parsecMouseShortcutKeyCodes: [Int] = [46, 35, 15, 49, 46]
+    static var parsecMouseShortcutModifierMasks: [UInt] = [
+        NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue,
+        NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue,
+        NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue,
+        NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue,
+        NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue | NSEvent.ModifierFlags.command.rawValue
+    ]
 
     static let defaultResolution = CGSizeMake(1920, 1080)
     static let defaultCustomResWidth: CGFloat? = nil
@@ -271,6 +306,12 @@ class SettingsModel: ObservableObject {
     static let defaultControllerDriver = "HID"
     static let defaultMouseDriver = "HID"
     static let defaultParsecMouseMode = false
+    static let defaultParsecMouseShortcut = "Control + Option + M"
+    static let defaultParsecMouseShortcutKeyCode = 46
+    static let defaultParsecMouseShortcutModifierMask = NSEvent.ModifierFlags.control.rawValue | NSEvent.ModifierFlags.option.rawValue
+    static var defaultParsecMouseShortcutIndex: Int {
+        getInt(from: defaultParsecMouseShortcut, in: parsecMouseShortcutOptions)
+    }
     static let defaultEmulateGuide = false
     static let defaultWindowsCtrlSource = "Control"
     static let defaultWindowsShiftSource = "Shift"
@@ -415,6 +456,10 @@ class SettingsModel: ObservableObject {
         selectedControllerDriver = Self.defaultControllerDriver
         selectedMouseDriver = Self.defaultMouseDriver
         parsecMouseMode = Self.defaultParsecMouseMode
+        selectedParsecMouseShortcut = Self.defaultParsecMouseShortcut
+        parsecMouseShortcutKeyCode = Self.defaultParsecMouseShortcutKeyCode
+        parsecMouseShortcutModifierMask = Self.defaultParsecMouseShortcutModifierMask
+        parsecMouseShortcutDisplay = Self.defaultParsecMouseShortcut
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -452,6 +497,11 @@ class SettingsModel: ObservableObject {
         rumble = Self.defaultRumble
         selectedControllerDriver = Self.defaultControllerDriver
         selectedMouseDriver = Self.defaultMouseDriver
+        parsecMouseMode = Self.defaultParsecMouseMode
+        selectedParsecMouseShortcut = Self.defaultParsecMouseShortcut
+        parsecMouseShortcutKeyCode = Self.defaultParsecMouseShortcutKeyCode
+        parsecMouseShortcutModifierMask = Self.defaultParsecMouseShortcutModifierMask
+        parsecMouseShortcutDisplay = Self.defaultParsecMouseShortcut
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -517,6 +567,11 @@ class SettingsModel: ObservableObject {
                 selectedControllerDriver = Self.getString(from: settings.controllerDriver, in: Self.controllerDrivers)
                 selectedMouseDriver = Self.getString(from: settings.mouseDriver, in: Self.mouseDrivers)
                 parsecMouseMode = settings.parsecMouseMode ?? Self.defaultParsecMouseMode
+                let legacyShortcutIndex = settings.parsecMouseShortcut ?? Self.defaultParsecMouseShortcutIndex
+                selectedParsecMouseShortcut = Self.getString(from: legacyShortcutIndex, in: Self.parsecMouseShortcutOptions)
+                parsecMouseShortcutKeyCode = settings.parsecMouseShortcutKeyCode ?? Self.keyCode(forParsecMouseShortcutIndex: legacyShortcutIndex)
+                parsecMouseShortcutModifierMask = settings.parsecMouseShortcutModifierMask ?? Self.modifierMask(forParsecMouseShortcutIndex: legacyShortcutIndex)
+                parsecMouseShortcutDisplay = settings.parsecMouseShortcutDisplay ?? Self.displayString(keyCode: parsecMouseShortcutKeyCode, modifierMask: parsecMouseShortcutModifierMask)
                 
                 emulateGuide = settings.emulateGuide
                 selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
@@ -578,6 +633,7 @@ class SettingsModel: ObservableObject {
         let multiController = Self.getBool(from: selectedMultiControllerMode, in: Self.multiControllerModes)
         let controllerDriver = Self.getInt(from: selectedControllerDriver, in: Self.controllerDrivers)
         let mouseDriver = Self.getInt(from: selectedMouseDriver, in: Self.mouseDrivers)
+        let parsecMouseShortcut = Self.getInt(from: selectedParsecMouseShortcut, in: Self.parsecMouseShortcutOptions)
         let windowsCtrlSource = Self.getInt(from: selectedWindowsCtrlSource, in: Self.keyboardModifierSources)
         let windowsShiftSource = Self.getInt(from: selectedWindowsShiftSource, in: Self.keyboardModifierSources)
         let windowsAltSource = Self.getInt(from: selectedWindowsAltSource, in: Self.keyboardModifierSources)
@@ -612,6 +668,10 @@ class SettingsModel: ObservableObject {
             controllerDriver: controllerDriver,
             mouseDriver: mouseDriver,
             parsecMouseMode: parsecMouseMode,
+            parsecMouseShortcut: parsecMouseShortcut,
+            parsecMouseShortcutKeyCode: parsecMouseShortcutKeyCode,
+            parsecMouseShortcutModifierMask: parsecMouseShortcutModifierMask,
+            parsecMouseShortcutDisplay: parsecMouseShortcutDisplay,
             emulateGuide: emulateGuide,
             windowsCtrlSource: windowsCtrlSource,
             windowsShiftSource: windowsShiftSource,
@@ -647,6 +707,103 @@ class SettingsModel: ObservableObject {
         }
         
         return settingString
+    }
+
+    static func keyCode(forParsecMouseShortcutIndex index: Int) -> Int {
+        if parsecMouseShortcutKeyCodes.indices.contains(index) {
+            return parsecMouseShortcutKeyCodes[index]
+        }
+
+        return defaultParsecMouseShortcutKeyCode
+    }
+
+    static func modifierMask(forParsecMouseShortcutIndex index: Int) -> UInt {
+        if parsecMouseShortcutModifierMasks.indices.contains(index) {
+            return parsecMouseShortcutModifierMasks[index]
+        }
+
+        return defaultParsecMouseShortcutModifierMask
+    }
+
+    static func displayString(keyCode: Int, modifierMask: UInt) -> String {
+        var parts: [String] = []
+        let flags = NSEvent.ModifierFlags(rawValue: modifierMask)
+        if flags.contains(.control) {
+            parts.append("Control")
+        }
+        if flags.contains(.option) {
+            parts.append("Option")
+        }
+        if flags.contains(.shift) {
+            parts.append("Shift")
+        }
+        if flags.contains(.command) {
+            parts.append("Command")
+        }
+        if flags.contains(.function) {
+            parts.append("Fn")
+        }
+        parts.append(keyLabel(forKeyCode: keyCode))
+        return parts.joined(separator: " + ")
+    }
+
+    static func keyLabel(forKeyCode keyCode: Int) -> String {
+        switch keyCode {
+        case 0: return "A"
+        case 1: return "S"
+        case 2: return "D"
+        case 3: return "F"
+        case 4: return "H"
+        case 5: return "G"
+        case 6: return "Z"
+        case 7: return "X"
+        case 8: return "C"
+        case 9: return "V"
+        case 11: return "B"
+        case 12: return "Q"
+        case 13: return "W"
+        case 14: return "E"
+        case 15: return "R"
+        case 16: return "Y"
+        case 17: return "T"
+        case 18: return "1"
+        case 19: return "2"
+        case 20: return "3"
+        case 21: return "4"
+        case 22: return "6"
+        case 23: return "5"
+        case 24: return "="
+        case 25: return "9"
+        case 26: return "7"
+        case 27: return "-"
+        case 28: return "8"
+        case 29: return "0"
+        case 30: return "]"
+        case 31: return "O"
+        case 32: return "U"
+        case 33: return "["
+        case 34: return "I"
+        case 35: return "P"
+        case 37: return "L"
+        case 38: return "J"
+        case 39: return "'"
+        case 40: return "K"
+        case 41: return ";"
+        case 42: return "\\"
+        case 43: return ","
+        case 44: return "/"
+        case 45: return "N"
+        case 46: return "M"
+        case 47: return "."
+        case 49: return "Space"
+        case 50: return "`"
+        case 53: return "Esc"
+        case 123: return "Left"
+        case 124: return "Right"
+        case 125: return "Down"
+        case 126: return "Up"
+        default: return "Key \(keyCode)"
+        }
     }
 
     static func storedValue(forPacingOption pacingOption: String) -> Int {

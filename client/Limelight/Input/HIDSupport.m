@@ -418,6 +418,8 @@ typedef enum {
 @property (nonatomic, strong) NSDictionary *mappings;
 @property (nonatomic) IOHIDManagerRef hidManager;
 @property (nonatomic) IOHIDManagerRef mouseHidManager;
+@property (nonatomic) CFRunLoopRef mouseHidRunLoop;
+@property (nonatomic, strong) NSThread *mouseHidThread;
 @property (nonatomic, strong) Controller *controller;
 @property (nonatomic) CVDisplayLinkRef displayLink;
 @property (atomic) CGFloat mouseDeltaX;
@@ -669,14 +671,61 @@ static void rawMouseHIDCallback(void *context, IOReturn result, void *sender, IO
                             @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Mouse)};
     IOHIDManagerSetDeviceMatching(self.mouseHidManager, (__bridge CFDictionaryRef)match);
     IOHIDManagerRegisterInputValueCallback(self.mouseHidManager, rawMouseHIDCallback, (__bridge void *)self);
-    IOHIDManagerScheduleWithRunLoop(self.mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+    __weak typeof(self) weakSelf = self;
+    NSThread *thread = [[NSThread alloc] initWithBlock:^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            dispatch_semaphore_signal(ready);
+            return;
+        }
+        CFRunLoopRef rl = CFRunLoopGetCurrent();
+        CFRetain(rl);
+        strongSelf.mouseHidRunLoop = rl;
+
+        CFRunLoopSourceContext sourceCtx = {0};
+        sourceCtx.perform = NULL;
+        CFRunLoopSourceRef keepAlive = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &sourceCtx);
+        CFRunLoopAddSource(rl, keepAlive, kCFRunLoopDefaultMode);
+
+        dispatch_semaphore_signal(ready);
+
+        while (!NSThread.currentThread.isCancelled) {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0e10, false);
+        }
+
+        CFRunLoopRemoveSource(rl, keepAlive, kCFRunLoopDefaultMode);
+        CFRelease(keepAlive);
+    }];
+    thread.name = @"com.moonlight-stream.mouseHid";
+    thread.qualityOfService = NSQualityOfServiceUserInteractive;
+    self.mouseHidThread = thread;
+    [thread start];
+    dispatch_semaphore_wait(ready, DISPATCH_TIME_FOREVER);
+
+    if (self.mouseHidRunLoop == NULL) {
+        Log(LOG_W, @"Raw HID mouse thread failed to provide run loop; falling back to AppKit mouse deltas");
+        CFRelease(self.mouseHidManager);
+        self.mouseHidManager = NULL;
+        self.mouseHidThread = nil;
+        self.rawMouseHidAvailable = NO;
+        return;
+    }
+
+    IOHIDManagerScheduleWithRunLoop(self.mouseHidManager, self.mouseHidRunLoop, kCFRunLoopDefaultMode);
 
     IOReturn openResult = IOHIDManagerOpen(self.mouseHidManager, kIOHIDOptionsTypeNone);
     if (openResult != kIOReturnSuccess) {
         Log(LOG_W, @"Raw HID mouse open failed (%d); falling back to AppKit mouse deltas", openResult);
-        IOHIDManagerUnscheduleFromRunLoop(self.mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDManagerUnscheduleFromRunLoop(self.mouseHidManager, self.mouseHidRunLoop, kCFRunLoopDefaultMode);
         CFRelease(self.mouseHidManager);
         self.mouseHidManager = NULL;
+        [self.mouseHidThread cancel];
+        CFRunLoopStop(self.mouseHidRunLoop);
+        CFRelease(self.mouseHidRunLoop);
+        self.mouseHidRunLoop = NULL;
+        self.mouseHidThread = nil;
         self.rawMouseHidAvailable = NO;
         return;
     }
@@ -2134,10 +2183,19 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
     }
 
     if (_mouseHidManager != NULL) {
-        IOHIDManagerUnscheduleFromRunLoop(_mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        CFRunLoopRef rl = _mouseHidRunLoop ?: CFRunLoopGetMain();
+        IOHIDManagerUnscheduleFromRunLoop(_mouseHidManager, rl, kCFRunLoopDefaultMode);
         IOHIDManagerClose(_mouseHidManager, kIOHIDOptionsTypeNone);
         CFRelease(_mouseHidManager);
         _mouseHidManager = NULL;
+    }
+
+    if (_mouseHidRunLoop != NULL) {
+        [_mouseHidThread cancel];
+        CFRunLoopStop(_mouseHidRunLoop);
+        CFRelease(_mouseHidRunLoop);
+        _mouseHidRunLoop = NULL;
+        _mouseHidThread = nil;
     }
 }
 
