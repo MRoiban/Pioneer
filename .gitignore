@@ -1,5 +1,11 @@
-**/xcuserdata/
-**/Moonlight.xcscmblueprint
-Build
-DerivedData
-Limelight/Version.xcconfig
+.DS_Store
+Build/
+DerivedData/
+
+client/Build/
+client/DerivedData/
+client/Limelight/Version.xcconfig
+
+server/build/
+server/out/
+server/.cache/
