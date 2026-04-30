@@ -479,6 +479,10 @@ struct InputView: View {
                             }
                         }
                     })
+
+                    Divider()
+
+                    ToggleCell(title: "Parsec Mouse Mode", boolBinding: $settingsModel.parsecMouseMode)
                 }
             }
             .padding()

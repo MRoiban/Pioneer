@@ -28,6 +28,7 @@ struct Settings: Encodable, Decodable {
     let rumble: Bool
     let controllerDriver: Int
     let mouseDriver: Int
+    let parsecMouseMode: Bool?
     
     let emulateGuide: Bool
     let windowsCtrlSource: Int?
@@ -77,6 +78,7 @@ class SettingsClass: NSObject {
                     "rumble": settings.rumble,
                     "controllerDriver": settings.controllerDriver,
                     "mouseDriver": settings.mouseDriver,
+                    "parsecMouseMode": settings.parsecMouseMode ?? SettingsModel.defaultParsecMouseMode,
                     "emulateGuide": settings.emulateGuide,
                     "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
                     "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
@@ -176,6 +178,14 @@ class SettingsClass: NSObject {
         }
         
         return SettingsModel.getInt(from: SettingsModel.defaultMouseDriver, in: SettingsModel.mouseDrivers)
+    }
+
+    @objc static func parsecMouseMode(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseMode ?? SettingsModel.defaultParsecMouseMode
+        }
+
+        return SettingsModel.defaultParsecMouseMode
     }
     
     @objc static func appArtworkDimensions(for key: String) -> CGSize {

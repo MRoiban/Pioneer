@@ -149,6 +149,11 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var parsecMouseMode: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
 
     @Published var emulateGuide: Bool {
         didSet {
@@ -234,7 +239,7 @@ class SettingsModel: ObservableObject {
     static var multiControllerModes: [String] = ["Single", "Auto"]
 
     static var controllerDrivers: [String] = ["HID", "MFi"]
-    static var mouseDrivers: [String] = ["HID", "MFi"]
+    static var mouseDrivers: [String] = ["HID", "MFi", "Raw HID"]
     static var keyboardModifierSources: [String] = ["Control", "Shift", "Option", "Command", "Fn"]
 
     static let defaultResolution = CGSizeMake(1920, 1080)
@@ -265,6 +270,7 @@ class SettingsModel: ObservableObject {
     static let defaultRumble = true
     static let defaultControllerDriver = "HID"
     static let defaultMouseDriver = "HID"
+    static let defaultParsecMouseMode = false
     static let defaultEmulateGuide = false
     static let defaultWindowsCtrlSource = "Control"
     static let defaultWindowsShiftSource = "Shift"
@@ -408,6 +414,7 @@ class SettingsModel: ObservableObject {
         rumble = Self.defaultRumble
         selectedControllerDriver = Self.defaultControllerDriver
         selectedMouseDriver = Self.defaultMouseDriver
+        parsecMouseMode = Self.defaultParsecMouseMode
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -509,6 +516,7 @@ class SettingsModel: ObservableObject {
                 rumble = settings.rumble
                 selectedControllerDriver = Self.getString(from: settings.controllerDriver, in: Self.controllerDrivers)
                 selectedMouseDriver = Self.getString(from: settings.mouseDriver, in: Self.mouseDrivers)
+                parsecMouseMode = settings.parsecMouseMode ?? Self.defaultParsecMouseMode
                 
                 emulateGuide = settings.emulateGuide
                 selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
@@ -603,6 +611,7 @@ class SettingsModel: ObservableObject {
             rumble: rumble,
             controllerDriver: controllerDriver,
             mouseDriver: mouseDriver,
+            parsecMouseMode: parsecMouseMode,
             emulateGuide: emulateGuide,
             windowsCtrlSource: windowsCtrlSource,
             windowsShiftSource: windowsShiftSource,

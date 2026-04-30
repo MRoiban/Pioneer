@@ -19,6 +19,7 @@
 - (void) launchFailed:(NSString*)message;
 - (void) rumble:(unsigned short)controllerNumber lowFreqMotor:(unsigned short)lowFreqMotor highFreqMotor:(unsigned short)highFreqMotor;
 - (void) connectionStatusUpdate:(int)status;
+- (void) cursorStateWithVersion:(uint8_t)version flags:(uint8_t)flags sequence:(uint32_t)sequence x:(int32_t)x y:(int32_t)y clipLeft:(int32_t)clipLeft clipTop:(int32_t)clipTop clipRight:(int32_t)clipRight clipBottom:(int32_t)clipBottom width:(uint16_t)width height:(uint16_t)height hotspotX:(uint16_t)hotspotX hotspotY:(uint16_t)hotspotY cursorHash:(uint32_t)cursorHash imageData:(const uint8_t*)imageData imageByteLength:(uint32_t)imageByteLength;
 
 @end
 

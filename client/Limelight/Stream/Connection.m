@@ -335,6 +335,17 @@ void ClConnectionStatusUpdate(int status)
     [_callbacks connectionStatusUpdate:status];
 }
 
+void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
+                   int32_t x, int32_t y, int32_t clipLeft, int32_t clipTop, int32_t clipRight, int32_t clipBottom,
+                   uint16_t width, uint16_t height, uint16_t hotspotX, uint16_t hotspotY,
+                   uint32_t cursorHash, const uint8_t* imageData, uint32_t imageByteLength)
+{
+    [_callbacks cursorStateWithVersion:version flags:flags sequence:sequence x:x y:y
+                              clipLeft:clipLeft clipTop:clipTop clipRight:clipRight clipBottom:clipBottom
+                                 width:width height:height hotspotX:hotspotX hotspotY:hotspotY
+                            cursorHash:cursorHash imageData:imageData imageByteLength:imageByteLength];
+}
+
 -(void) terminate
 {
     // Interrupt any action blocking LiStartConnection(). This is
@@ -406,6 +417,7 @@ void ClConnectionStatusUpdate(int status)
     _streamConfig.fps = config.frameRate;
     _streamConfig.bitrate = config.bitRate;
     _streamConfig.enableHdr = config.enableHdr;
+    _streamConfig.cursorFeedback = config.cursorFeedback;
     _streamConfig.audioConfiguration = config.audioConfiguration;
     _streamConfig.colorSpace = COLORSPACE_REC_709;
     
@@ -474,6 +486,7 @@ void ClConnectionStatusUpdate(int status)
     _clCallbacks.logMessage = ClLogMessage;
     _clCallbacks.rumble = ClRumble;
     _clCallbacks.connectionStatusUpdate = ClConnectionStatusUpdate;
+    _clCallbacks.cursorState = ClCursorState;
 
     return self;
 }

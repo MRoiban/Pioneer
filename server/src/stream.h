@@ -32,6 +32,7 @@ namespace stream {
     int controlProtocolType;
     int audioQosType;
     int videoQosType;
+    bool cursorFeedbackRequested;
 
     uint32_t encryptionFlagsEnabled;
 

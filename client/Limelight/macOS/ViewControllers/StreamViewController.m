@@ -44,6 +44,9 @@
 @property (nonatomic, strong) id windowWillCloseNotification;
 @property (nonatomic) int cursorHiddenCounter;
 @property (nonatomic) BOOL awdlDisablerStarted;
+@property (nonatomic) BOOL parsecMouseMode;
+@property (nonatomic) BOOL parsecRelativeMouseMode;
+@property (nonatomic) BOOL parsecManualMouseOverride;
 
 @property (nonatomic) IOPMAssertionID powerAssertionID;
 
@@ -90,6 +93,7 @@
     
     self.windowDidResignKeyNotification = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
         if ([weakSelf isOurWindowTheWindowInNotiifcation:note]) {
+            weakSelf.parsecManualMouseOverride = NO;
             if (![weakSelf isWindowInCurrentSpace] || ![weakSelf isWindowFullscreen]) {
                 [weakSelf uncaptureMouse];
             }
@@ -162,6 +166,10 @@
 }
 
 - (void)keyDown:(NSEvent *)event {
+    if ([self handleParsecMouseOverrideHotkey:event]) {
+        return;
+    }
+
     [self.hidSupport keyDown:event];
 }
 
@@ -204,18 +212,30 @@
 }
 
 - (void)mouseMoved:(NSEvent *)event {
+    if ([self sendDesktopMousePositionIfNeeded:event]) {
+        return;
+    }
     [self.hidSupport mouseMoved:event];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    if ([self sendDesktopMousePositionIfNeeded:event]) {
+        return;
+    }
     [self.hidSupport mouseMoved:event];
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
+    if ([self sendDesktopMousePositionIfNeeded:event]) {
+        return;
+    }
     [self.hidSupport mouseMoved:event];
 }
 
 - (void)otherMouseDragged:(NSEvent *)event {
+    if ([self sendDesktopMousePositionIfNeeded:event]) {
+        return;
+    }
     [self.hidSupport mouseMoved:event];
 }
 
@@ -249,6 +269,10 @@
 - (BOOL)onKeyboardEquivalent:(NSEvent *)event {
     const NSEventModifierFlags modifierFlags = NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
     const NSEventModifierFlags eventModifierFlags = event.modifierFlags & modifierFlags;
+
+    if ([self handleParsecMouseOverrideHotkey:event]) {
+        return YES;
+    }
     
     if (event.keyCode == kVK_ANSI_1 && eventModifierFlags == NSEventModifierFlagCommand) {
         [self.hidSupport releaseAllModifierKeys];
@@ -337,6 +361,16 @@
 }
 
 - (void)captureMouse {
+    if (self.parsecMouseMode && !self.parsecRelativeMouseMode) {
+        [self captureDesktopMouse];
+        return;
+    }
+
+    [self captureRelativeMouse];
+}
+
+- (void)captureRelativeMouse {
+    [self.streamView setHostCursorVisible:NO];
     CGAssociateMouseAndMouseCursorPosition(NO);
     if (self.cursorHiddenCounter == 0) {
         [NSCursor hide];
@@ -358,6 +392,22 @@
     self.view.window.acceptsMouseMovedEvents = YES;
 }
 
+- (void)captureDesktopMouse {
+    CGAssociateMouseAndMouseCursorPosition(YES);
+    if (self.cursorHiddenCounter != 0) {
+        [NSCursor unhide];
+        self.cursorHiddenCounter --;
+    }
+    [self.streamView setHostCursorVisible:YES];
+
+    [self enableMenuItems:NO];
+    [self disallowDisplaySleep];
+
+    self.hidSupport.shouldSendInputEvents = YES;
+    self.controllerSupport.shouldSendInputEvents = YES;
+    self.view.window.acceptsMouseMovedEvents = YES;
+}
+
 - (void)uncaptureMouse {
     CGAssociateMouseAndMouseCursorPosition(YES);
     if (self.cursorHiddenCounter != 0) {
@@ -372,6 +422,103 @@
     self.hidSupport.shouldSendInputEvents = NO;
     self.controllerSupport.shouldSendInputEvents = NO;
     self.view.window.acceptsMouseMovedEvents = NO;
+    [self.streamView setHostCursorVisible:NO];
+}
+
+- (BOOL)sendDesktopMousePositionIfNeeded:(NSEvent *)event {
+    if (!self.parsecMouseMode || self.parsecRelativeMouseMode || !self.hidSupport.shouldSendInputEvents) {
+        return NO;
+    }
+
+    NSPoint point = [self.view convertPoint:event.locationInWindow fromView:nil];
+    CGFloat width = MAX(1, self.view.bounds.size.width);
+    CGFloat height = MAX(1, self.view.bounds.size.height);
+    short referenceWidth = (short)MAX(1, MIN(INT16_MAX, lround(width)));
+    short referenceHeight = (short)MAX(1, MIN(INT16_MAX, lround(height)));
+    short x = (short)MAX(0, MIN(referenceWidth, lround(point.x)));
+    short y = (short)MAX(0, MIN(referenceHeight, lround(height - point.y)));
+
+    LiSendMousePositionEvent(x, y, referenceWidth, referenceHeight);
+    [self.streamView moveHostCursorToPoint:NSMakePoint(x, height - y)];
+    return YES;
+}
+
+- (void)setParsecRelativeMouseMode:(BOOL)relativeMode {
+    if (_parsecRelativeMouseMode == relativeMode) {
+        return;
+    }
+
+    _parsecRelativeMouseMode = relativeMode;
+    if (self.hidSupport.shouldSendInputEvents) {
+        [self captureMouse];
+    }
+}
+
+- (BOOL)handleParsecMouseOverrideHotkey:(NSEvent *)event {
+    if (!self.parsecMouseMode || event.type != NSEventTypeKeyDown) {
+        return NO;
+    }
+
+    const NSEventModifierFlags modifierFlags = NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
+    const NSEventModifierFlags eventModifierFlags = event.modifierFlags & modifierFlags;
+    if (event.keyCode != kVK_ANSI_M || eventModifierFlags != (NSEventModifierFlagControl | NSEventModifierFlagOption)) {
+        return NO;
+    }
+
+    [self.hidSupport releaseAllModifierKeys];
+    self.parsecManualMouseOverride = YES;
+    [self setParsecRelativeMouseMode:!self.parsecRelativeMouseMode];
+    return YES;
+}
+
+- (NSImage *)hostCursorImageWithBGRAData:(const uint8_t *)imageData width:(uint16_t)width height:(uint16_t)height imageByteLength:(uint32_t)imageByteLength {
+    if (imageData == NULL || width == 0 || height == 0 || imageByteLength != (uint32_t)width * height * 4) {
+        return nil;
+    }
+
+    NSData *data = [NSData dataWithBytes:imageData length:imageByteLength];
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+    if (provider == NULL) {
+        return nil;
+    }
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    if (colorSpace == NULL) {
+        CGDataProviderRelease(provider);
+        return nil;
+    }
+
+    CGImageRef cgImage = CGImageCreate(width, height, 8, 32, width * 4, colorSpace,
+                                       kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst,
+                                       provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+
+    if (cgImage == NULL) {
+        return nil;
+    }
+
+    NSImage *image = [[NSImage alloc] initWithCGImage:cgImage size:NSMakeSize(width, height)];
+    CGImageRelease(cgImage);
+    return image;
+}
+
+- (NSPoint)localPointForHostCursorX:(int32_t)x y:(int32_t)y clipLeft:(int32_t)clipLeft clipTop:(int32_t)clipTop clipRight:(int32_t)clipRight clipBottom:(int32_t)clipBottom flags:(uint8_t)flags {
+    CGFloat normalizedX = 0;
+    CGFloat normalizedY = 0;
+
+    if ((flags & LI_CURSOR_FLAG_CLIP_VALID) != 0 && clipRight > clipLeft && clipBottom > clipTop) {
+        normalizedX = ((CGFloat)x - clipLeft) / ((CGFloat)clipRight - clipLeft);
+        normalizedY = ((CGFloat)y - clipTop) / ((CGFloat)clipBottom - clipTop);
+    } else {
+        struct Resolution resolution = [self.class getResolution];
+        normalizedX = resolution.width > 0 ? (CGFloat)x / resolution.width : 0;
+        normalizedY = resolution.height > 0 ? (CGFloat)y / resolution.height : 0;
+    }
+
+    normalizedX = MAX(0, MIN(1, normalizedX));
+    normalizedY = MAX(0, MIN(1, normalizedY));
+    return NSMakePoint(normalizedX * self.view.bounds.size.width, (1 - normalizedY) * self.view.bounds.size.height);
 }
 
 - (BOOL)isWindowInCurrentSpace {
@@ -501,6 +648,7 @@
     streamConfig.optimizeGameSettings = streamSettings.optimizeGames;
     streamConfig.playAudioOnPC = streamSettings.playAudioOnPC;
     streamConfig.allowHevc = streamSettings.useHevc;
+    streamConfig.cursorFeedback = [SettingsClass parsecMouseModeFor:self.app.host.uuid];
     streamConfig.enableHdr = streamSettings.useHevc && VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? streamSettings.enableHdr : NO;
 
     streamConfig.multiController = streamSettings.multiController;
@@ -514,6 +662,9 @@
         }
     }
     self.hidSupport = [[HIDSupport alloc] init:self.app.host];
+    self.parsecMouseMode = streamConfig.cursorFeedback;
+    self.parsecRelativeMouseMode = !self.parsecMouseMode;
+    self.parsecManualMouseOverride = NO;
     [self startAWDLDisablerIfNeeded];
     
     self.streamMan = [[StreamManager alloc] initWithConfig:streamConfig renderView:self.view connectionCallbacks:self];
@@ -591,6 +742,34 @@
 }
 
 - (void)connectionStatusUpdate:(int)status {
+}
+
+- (void)cursorStateWithVersion:(uint8_t)version flags:(uint8_t)flags sequence:(uint32_t)sequence x:(int32_t)x y:(int32_t)y clipLeft:(int32_t)clipLeft clipTop:(int32_t)clipTop clipRight:(int32_t)clipRight clipBottom:(int32_t)clipBottom width:(uint16_t)width height:(uint16_t)height hotspotX:(uint16_t)hotspotX hotspotY:(uint16_t)hotspotY cursorHash:(uint32_t)cursorHash imageData:(const uint8_t *)imageData imageByteLength:(uint32_t)imageByteLength {
+    if (!self.parsecMouseMode || version != 1) {
+        return;
+    }
+
+    BOOL relativeMode = (flags & LI_CURSOR_FLAG_RELATIVE_MODE) != 0;
+    BOOL visible = (flags & LI_CURSOR_FLAG_VISIBLE) != 0;
+    BOOL imageIncluded = (flags & LI_CURSOR_FLAG_IMAGE_INCLUDED) != 0;
+    NSImage *cursorImage = imageIncluded ? [self hostCursorImageWithBGRAData:imageData width:width height:height imageByteLength:imageByteLength] : nil;
+    NSPoint hostCursorPoint = [self localPointForHostCursorX:x y:y clipLeft:clipLeft clipTop:clipTop clipRight:clipRight clipBottom:clipBottom flags:flags];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.parsecManualMouseOverride) {
+            [self setParsecRelativeMouseMode:relativeMode];
+        }
+        BOOL displayedRelativeMode = self.parsecManualMouseOverride ? self.parsecRelativeMouseMode : relativeMode;
+        if (cursorImage != nil) {
+            [self.streamView updateHostCursorImage:cursorImage hotspot:NSMakePoint(hotspotX, hotspotY) visible:visible && !displayedRelativeMode];
+            if (visible && !displayedRelativeMode && self.cursorHiddenCounter == 0) {
+                [NSCursor hide];
+                self.cursorHiddenCounter ++;
+            }
+        }
+        [self.streamView moveHostCursorToPoint:hostCursorPoint];
+        [self.streamView setHostCursorVisible:visible && !displayedRelativeMode];
+    });
 }
 
 

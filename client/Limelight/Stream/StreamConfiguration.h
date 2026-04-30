@@ -37,6 +37,7 @@ typedef NS_ENUM(NSInteger, MLFramePacingMode) {
 @property BOOL enableHdr;
 @property BOOL multiController;
 @property BOOL allowHevc;
+@property BOOL cursorFeedback;
 @property NSData* serverCert;
 @property int framePacing;
 

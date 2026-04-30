@@ -4,9 +4,15 @@
  */
 
 // standard includes
+#include <cstring>
 #include <fstream>
 #include <future>
 #include <queue>
+#include <vector>
+
+#ifdef _WIN32
+  #include <Windows.h>
+#endif
 
 // lib includes
 #include <boost/endian/arithmetic.hpp>
@@ -49,6 +55,15 @@ constexpr int IDX_RUMBLE_TRIGGER_DATA = 12;
 constexpr int IDX_SET_MOTION_EVENT = 13;
 constexpr int IDX_SET_RGB_LED = 14;
 constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;
+constexpr int IDX_CURSOR_STATE = 16;
+
+constexpr std::uint8_t CURSOR_FLAG_VISIBLE = 0x01;
+constexpr std::uint8_t CURSOR_FLAG_RELATIVE_MODE = 0x02;
+constexpr std::uint8_t CURSOR_FLAG_CLIP_VALID = 0x04;
+constexpr std::uint8_t CURSOR_FLAG_IMAGE_INCLUDED = 0x08;
+constexpr std::uint8_t CURSOR_FLAG_HOST_CURSOR_HIDDEN = 0x10;
+
+constexpr std::uint32_t CURSOR_IMAGE_MAX_BYTES = 120 * 120 * 4;
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -67,6 +82,7 @@ static const short packetTypes[] = {
   0x5501,  // Set motion event (Sunshine protocol extension)
   0x5502,  // Set RGB LED (Sunshine protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x5504,  // Cursor state (Moonlight/Sunshine mouse extension)
 };
 
 namespace asio = boost::asio;
@@ -211,6 +227,28 @@ namespace stream {
     // Sunshine protocol extension
     SS_HDR_METADATA metadata;
   };
+
+  struct control_cursor_state_t {
+    control_header_v2 header;
+
+    std::uint8_t version;
+    std::uint8_t flags;
+    boost::endian::little_uint32_at sequence;
+    boost::endian::little_int32_at x;
+    boost::endian::little_int32_at y;
+    boost::endian::little_int32_at clipLeft;
+    boost::endian::little_int32_at clipTop;
+    boost::endian::little_int32_at clipRight;
+    boost::endian::little_int32_at clipBottom;
+    boost::endian::little_uint16_at width;
+    boost::endian::little_uint16_at height;
+    boost::endian::little_uint16_at hotspotX;
+    boost::endian::little_uint16_at hotspotY;
+    boost::endian::little_uint32_at cursorHash;
+    boost::endian::little_uint32_at imageByteLength;
+  };
+
+  static_assert(sizeof(control_cursor_state_t) - sizeof(control_header_v2) == 46);
 
   typedef struct control_encrypted_t {
     std::uint16_t encryptedHeaderType;  // Always LE 0x0001
@@ -399,6 +437,9 @@ namespace stream {
 
       net::peer_t peer;
       std::uint32_t seq;
+      std::uint32_t cursor_state_sequence;
+      std::uint32_t cursor_image_hash;
+      std::chrono::steady_clock::time_point next_cursor_state;
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
@@ -449,6 +490,44 @@ namespace stream {
       // Nvidia's old style encryption uses a 16-byte IV
       iv.resize(16);
 
+      iv[0] = (std::uint8_t) seq;
+    }
+
+    auto packet = (control_encrypted_p) tagged_cipher.data();
+
+    auto bytes = session->control.cipher.encrypt(plaintext, packet->payload(), &iv);
+    if (bytes <= 0) {
+      BOOST_LOG(error) << "Couldn't encrypt control data"sv;
+      return {};
+    }
+
+    std::uint16_t packet_length = bytes + crypto::cipher::tag_size + sizeof(control_encrypted_t::seq);
+
+    packet->encryptedHeaderType = util::endian::little(0x0001);
+    packet->length = util::endian::little(packet_length);
+    packet->seq = util::endian::little(seq);
+
+    return std::string_view {(char *) tagged_cipher.data(), packet_length + sizeof(control_encrypted_t) - sizeof(control_encrypted_t::seq)};
+  }
+
+  static inline std::string_view encode_control(session_t *session, const std::string_view &plaintext, std::vector<std::uint8_t> &tagged_cipher) {
+    if (session->config.controlProtocolType != 13) {
+      return plaintext;
+    }
+
+    auto padded_size = crypto::cipher::round_to_pkcs7_padded(plaintext.size());
+    tagged_cipher.resize(sizeof(control_encrypted_t) + padded_size + crypto::cipher::tag_size);
+
+    auto seq = session->control.seq++;
+
+    auto &iv = session->control.outgoing_iv;
+    if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
+      iv.resize(12);
+      std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
+      iv[10] = 'H';
+      iv[11] = 'C';
+    } else {
+      iv.resize(16);
       iv[0] = (std::uint8_t) seq;
     }
 
@@ -919,6 +998,231 @@ namespace stream {
     return 0;
   }
 
+#ifdef _WIN32
+  std::uint32_t hash_cursor_image(const std::vector<std::uint8_t> &image, std::uint16_t width, std::uint16_t height, std::uint16_t hotspot_x, std::uint16_t hotspot_y) {
+    std::uint32_t hash = 2166136261u;
+    auto mix = [&hash](std::uint8_t value) {
+      hash ^= value;
+      hash *= 16777619u;
+    };
+
+    for (auto value : image) {
+      mix(value);
+    }
+    mix((std::uint8_t) width);
+    mix((std::uint8_t) (width >> 8));
+    mix((std::uint8_t) height);
+    mix((std::uint8_t) (height >> 8));
+    mix((std::uint8_t) hotspot_x);
+    mix((std::uint8_t) (hotspot_x >> 8));
+    mix((std::uint8_t) hotspot_y);
+    mix((std::uint8_t) (hotspot_y >> 8));
+
+    return hash;
+  }
+
+  bool capture_cursor_image(HCURSOR cursor, std::vector<std::uint8_t> &image, std::uint16_t &width, std::uint16_t &height, std::uint16_t &hotspot_x, std::uint16_t &hotspot_y, std::uint32_t &hash) {
+    if (!cursor) {
+      return false;
+    }
+
+    ICONINFO icon_info {};
+    if (!GetIconInfo(cursor, &icon_info)) {
+      return false;
+    }
+
+    auto icon_info_guard = util::fail_guard([&]() {
+      if (icon_info.hbmColor) {
+        DeleteObject(icon_info.hbmColor);
+      }
+      if (icon_info.hbmMask) {
+        DeleteObject(icon_info.hbmMask);
+      }
+    });
+
+    BITMAP bitmap {};
+    HBITMAP source_bitmap = icon_info.hbmColor ? icon_info.hbmColor : icon_info.hbmMask;
+    if (!source_bitmap || GetObject(source_bitmap, sizeof(bitmap), &bitmap) != sizeof(bitmap)) {
+      return false;
+    }
+
+    int cursor_width = bitmap.bmWidth;
+    int cursor_height = icon_info.hbmColor ? bitmap.bmHeight : bitmap.bmHeight / 2;
+    if (cursor_width <= 0 || cursor_height <= 0 || cursor_width > 120 || cursor_height > 120) {
+      return false;
+    }
+
+    width = (std::uint16_t) cursor_width;
+    height = (std::uint16_t) cursor_height;
+    hotspot_x = (std::uint16_t) std::min<std::uint32_t>(icon_info.xHotspot, width);
+    hotspot_y = (std::uint16_t) std::min<std::uint32_t>(icon_info.yHotspot, height);
+    image.assign((std::size_t) width * height * 4, 0);
+
+    BITMAPINFO bitmap_info {};
+    bitmap_info.bmiHeader.biSize = sizeof(bitmap_info.bmiHeader);
+    bitmap_info.bmiHeader.biWidth = width;
+    bitmap_info.bmiHeader.biHeight = -(LONG) height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    void *bits = nullptr;
+    util::safe_ptr_v2<HDC__, BOOL, DeleteDC> dc {CreateCompatibleDC(nullptr)};
+    if (!dc) {
+      return false;
+    }
+
+    util::safe_ptr_v2<void, BOOL, DeleteObject> dib {CreateDIBSection(dc.get(), &bitmap_info, DIB_RGB_COLORS, &bits, nullptr, 0)};
+    if (!dib || !bits) {
+      return false;
+    }
+
+    auto old_bitmap = SelectObject(dc.get(), dib.get());
+    if (!old_bitmap) {
+      return false;
+    }
+
+    std::memset(bits, 0, image.size());
+    DrawIconEx(dc.get(), 0, 0, cursor, width, height, 0, nullptr, DI_NORMAL);
+    std::memcpy(image.data(), bits, image.size());
+    SelectObject(dc.get(), old_bitmap);
+
+    bool has_alpha = false;
+    for (std::size_t i = 3; i < image.size(); i += 4) {
+      if (image[i] != 0) {
+        has_alpha = true;
+        break;
+      }
+    }
+
+    if (!has_alpha) {
+      for (std::size_t i = 0; i < image.size(); i += 4) {
+        if (image[i] != 0 || image[i + 1] != 0 || image[i + 2] != 0) {
+          image[i + 3] = 0xFF;
+        }
+      }
+    }
+
+    for (std::size_t i = 0; i < image.size(); i += 4) {
+      auto alpha = image[i + 3];
+      image[i] = (std::uint8_t) ((image[i] * alpha) / 255);
+      image[i + 1] = (std::uint8_t) ((image[i + 1] * alpha) / 255);
+      image[i + 2] = (std::uint8_t) ((image[i + 2] * alpha) / 255);
+    }
+
+    hash = hash_cursor_image(image, width, height, hotspot_x, hotspot_y);
+    return true;
+  }
+#endif
+
+  int send_cursor_state(session_t *session) {
+    if (!session->config.cursorFeedbackRequested || !session->control.peer) {
+      return 0;
+    }
+
+    control_cursor_state_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_CURSOR_STATE];
+    plaintext.header.payloadLength = sizeof(control_cursor_state_t) - sizeof(control_header_v2);
+    plaintext.version = 1;
+    plaintext.sequence = ++session->control.cursor_state_sequence;
+    std::vector<std::uint8_t> cursor_image;
+
+#ifdef _WIN32
+    CURSORINFO cursor_info {};
+    cursor_info.cbSize = sizeof(cursor_info);
+    RECT clip {};
+
+    bool visible = false;
+    bool clip_valid = false;
+    bool relative_mode = false;
+    POINT position {};
+
+    if (GetCursorInfo(&cursor_info)) {
+      visible = (cursor_info.flags & CURSOR_SHOWING) != 0;
+      position = cursor_info.ptScreenPos;
+    }
+
+    if (GetClipCursor(&clip)) {
+      clip_valid = true;
+      const auto clip_width = clip.right - clip.left;
+      const auto clip_height = clip.bottom - clip.top;
+      const auto virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+      const auto virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+      relative_mode = clip_width > 0 && clip_height > 0 &&
+        (clip_width < (virtual_width * 95 / 100) || clip_height < (virtual_height * 95 / 100));
+    }
+
+    if (!visible) {
+      relative_mode = true;
+    }
+
+    std::uint8_t flags = 0;
+    if (visible) {
+      flags |= CURSOR_FLAG_VISIBLE;
+    }
+    if (relative_mode) {
+      flags |= CURSOR_FLAG_RELATIVE_MODE;
+    }
+    if (clip_valid) {
+      flags |= CURSOR_FLAG_CLIP_VALID;
+    }
+    if (!visible) {
+      flags |= CURSOR_FLAG_HOST_CURSOR_HIDDEN;
+    }
+
+    std::uint16_t cursor_width = 0;
+    std::uint16_t cursor_height = 0;
+    std::uint16_t hotspot_x = 0;
+    std::uint16_t hotspot_y = 0;
+    std::uint32_t cursor_hash = 0;
+    if (visible && capture_cursor_image(cursor_info.hCursor, cursor_image, cursor_width, cursor_height, hotspot_x, hotspot_y, cursor_hash)) {
+      plaintext.width = cursor_width;
+      plaintext.height = cursor_height;
+      plaintext.hotspotX = hotspot_x;
+      plaintext.hotspotY = hotspot_y;
+      plaintext.cursorHash = cursor_hash;
+
+      if (cursor_hash != session->control.cursor_image_hash && cursor_image.size() <= CURSOR_IMAGE_MAX_BYTES) {
+        flags |= CURSOR_FLAG_IMAGE_INCLUDED;
+        plaintext.imageByteLength = (std::uint32_t) cursor_image.size();
+        session->control.cursor_image_hash = cursor_hash;
+      } else {
+        cursor_image.clear();
+        plaintext.imageByteLength = 0;
+      }
+    }
+
+    plaintext.flags = flags;
+    plaintext.x = position.x;
+    plaintext.y = position.y;
+    plaintext.clipLeft = clip.left;
+    plaintext.clipTop = clip.top;
+    plaintext.clipRight = clip.right;
+    plaintext.clipBottom = clip.bottom;
+#else
+    plaintext.flags = 0;
+#endif
+
+    plaintext.header.payloadLength = sizeof(control_cursor_state_t) - sizeof(control_header_v2) + plaintext.imageByteLength;
+
+    std::vector<std::uint8_t> plaintext_payload(sizeof(plaintext) + cursor_image.size());
+    std::memcpy(plaintext_payload.data(), &plaintext, sizeof(plaintext));
+    if (!cursor_image.empty()) {
+      std::memcpy(plaintext_payload.data() + sizeof(plaintext), cursor_image.data(), cursor_image.size());
+    }
+
+    std::vector<std::uint8_t> encrypted_payload;
+
+    auto payload = encode_control(session, std::string_view {(char *) plaintext_payload.data(), plaintext_payload.size()}, encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+      BOOST_LOG(warning) << "Couldn't send cursor state to ["sv << addr << ':' << port << ']';
+      return -1;
+    }
+
+    return 0;
+  }
+
   void controlBroadcastThread(control_server_t *server) {
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -1070,6 +1374,7 @@ namespace stream {
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
       bool has_session_awaiting_peer = false;
+      bool has_cursor_feedback_session = false;
 
       {
         auto lg = server->_sessions.lock();
@@ -1125,6 +1430,14 @@ namespace stream {
 
               send_hdr_mode(session, std::move(hdr_info));
             }
+
+            if (session->config.cursorFeedbackRequested) {
+              has_cursor_feedback_session = true;
+              if (now >= session->control.next_cursor_state) {
+                send_cursor_state(session);
+                session->control.next_cursor_state = now + 8ms;
+              }
+            }
           }
 
           ++pos;
@@ -1137,7 +1450,7 @@ namespace stream {
         break;
       }
 
-      server->iterate(150ms);
+      server->iterate(has_cursor_feedback_session && !has_session_awaiting_peer ? 8ms : 150ms);
     }
 
     // Let all remaining connections know the server is shutting down
@@ -1993,7 +2306,7 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
-        platf::streaming_will_start();
+        platf::streaming_will_start(session.config.cursorFeedbackRequested);
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
 #endif
@@ -2013,6 +2326,9 @@ namespace stream {
       session->config = config;
 
       session->control.connect_data = launch_session.control_connect_data;
+      session->control.cursor_state_sequence = 0;
+      session->control.cursor_image_hash = UINT32_MAX;
+      session->control.next_cursor_state = std::chrono::steady_clock::now();
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.legacy_input_enc_iv = launch_session.iv;

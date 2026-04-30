@@ -283,6 +283,7 @@ namespace platf {
 
     constexpr caps_t pen_touch = 0x01;  // Pen and touch events
     constexpr caps_t controller_touch = 0x02;  // Controller touch events
+    constexpr caps_t cursor_feedback = 0x04;  // Host cursor state feedback
   };  // namespace platform_caps
 
   struct gamepad_state_t {
@@ -627,7 +628,7 @@ namespace platf {
   void enable_mouse_keys();
 
   // Allow OS-specific actions to be taken to prepare for streaming
-  void streaming_will_start();
+  void streaming_will_start(bool optimize_mouse = false);
   void streaming_will_stop();
 
   void restart();

@@ -409,7 +409,8 @@ namespace platf {
     // Unimplemented
   }
 
-  void streaming_will_start() {
+  void streaming_will_start(bool optimize_mouse) {
+    (void) optimize_mouse;
     // Nothing to do
   }
 

@@ -104,6 +104,9 @@ namespace platf {
 
   bool enabled_mouse_keys = false;
   MOUSEKEYS previous_mouse_keys_state;
+  bool saved_mouse_settings = false;
+  int previous_mouse_settings[3] {};
+  int previous_mouse_speed = 10;
 
   HANDLE qos_handle = nullptr;
 
@@ -1063,7 +1066,7 @@ namespace platf {
     }
   }
 
-  void streaming_will_start() {
+  void streaming_will_start(bool optimize_mouse) {
     static std::once_flag load_wlanapi_once_flag;
     std::call_once(load_wlanapi_once_flag, []() {
       // wlanapi.dll is not installed by default on Windows Server, so we load it dynamically
@@ -1107,6 +1110,26 @@ namespace platf {
 
     // Promote ourselves to high priority class
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    if (optimize_mouse && !saved_mouse_settings) {
+      if (SystemParametersInfoW(SPI_GETMOUSE, 0, previous_mouse_settings, 0) &&
+          SystemParametersInfoW(SPI_GETMOUSESPEED, 0, &previous_mouse_speed, 0)) {
+        int neutral_mouse_settings[3] {0, 0, 0};
+        int neutral_mouse_speed = 10;
+
+        if (SystemParametersInfoW(SPI_SETMOUSE, 0, neutral_mouse_settings, 0) &&
+            SystemParametersInfoW(SPI_SETMOUSESPEED, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(neutral_mouse_speed)), 0)) {
+          saved_mouse_settings = true;
+          BOOST_LOG(info) << "Temporarily set neutral Windows mouse speed and acceleration for streaming"sv;
+        } else {
+          auto winerr = GetLastError();
+          BOOST_LOG(warning) << "Unable to set neutral mouse settings: "sv << winerr;
+        }
+      } else {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to save current mouse settings: "sv << winerr;
+      }
+    }
 
     // Modify NVIDIA control panel settings again, in case they have been changed externally since sunshine launch
     if (nvprefs_instance.load()) {
@@ -1209,6 +1232,15 @@ namespace platf {
       if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
         auto winerr = GetLastError();
         BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
+      }
+    }
+
+    if (saved_mouse_settings) {
+      saved_mouse_settings = false;
+      if (!SystemParametersInfoW(SPI_SETMOUSE, 0, previous_mouse_settings, 0) ||
+          !SystemParametersInfoW(SPI_SETMOUSESPEED, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(previous_mouse_speed)), 0)) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to restore original mouse settings: "sv << winerr;
       }
     }
   }

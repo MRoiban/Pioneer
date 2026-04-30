@@ -960,6 +960,7 @@ namespace rtsp_stream {
     args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
     args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
+    args.try_emplace("x-ss-client.cursorFeedback"sv, "0"sv);
 
     stream::config_t config;
 
@@ -980,6 +981,7 @@ namespace rtsp_stream {
       config.audioQosType = (int) util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
       config.videoQosType = (int) util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
       config.encryptionFlagsEnabled = (uint32_t) util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
+      config.cursorFeedbackRequested = util::from_view(args.at("x-ss-client.cursorFeedback"sv)) != 0;
 
       // Legacy clients use nvFeatureFlags to indicate support for audio encryption
       if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {

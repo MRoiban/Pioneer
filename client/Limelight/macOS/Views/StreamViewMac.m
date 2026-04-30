@@ -10,6 +10,9 @@
 
 @interface StreamViewMac ()
 @property (nonatomic, strong) NSProgressIndicator *spinner;
+@property (nonatomic, strong) NSImageView *hostCursorImageView;
+@property (nonatomic) NSPoint hostCursorHotspot;
+@property (nonatomic) NSPoint hostCursorPoint;
 
 @end
 
@@ -27,6 +30,11 @@
         [self.spinner.centerYAnchor constraintEqualToAnchor:self.centerYAnchor].active = YES;
         [self.spinner.widthAnchor constraintEqualToConstant:32].active = YES;
         [self.spinner.heightAnchor constraintEqualToConstant:32].active = YES;
+
+        self.hostCursorImageView = [[NSImageView alloc] initWithFrame:NSZeroRect];
+        self.hostCursorImageView.imageScaling = NSImageScaleNone;
+        self.hostCursorImageView.hidden = YES;
+        [self addSubview:self.hostCursorImageView positioned:NSWindowAbove relativeTo:nil];
     }
     return self;
 }
@@ -50,6 +58,30 @@
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     return [self.keyboardNotifiable onKeyboardEquivalent:event];
+}
+
+- (void)updateHostCursorImage:(NSImage *)image hotspot:(NSPoint)hotspot visible:(BOOL)visible {
+    self.hostCursorImageView.image = image;
+    self.hostCursorHotspot = hotspot;
+    self.hostCursorImageView.hidden = !visible || image == nil;
+    [self moveHostCursorToPoint:self.hostCursorPoint];
+}
+
+- (void)moveHostCursorToPoint:(NSPoint)point {
+    self.hostCursorPoint = point;
+
+    NSImage *image = self.hostCursorImageView.image;
+    if (image == nil) {
+        return;
+    }
+
+    CGFloat x = point.x - self.hostCursorHotspot.x;
+    CGFloat y = point.y - (image.size.height - self.hostCursorHotspot.y);
+    self.hostCursorImageView.frame = NSMakeRect(x, y, image.size.width, image.size.height);
+}
+
+- (void)setHostCursorVisible:(BOOL)visible {
+    self.hostCursorImageView.hidden = !visible || self.hostCursorImageView.image == nil;
 }
 
 @end

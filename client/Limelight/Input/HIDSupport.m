@@ -35,6 +35,12 @@ typedef NS_ENUM(NSInteger, KeyboardModifierSource) {
     KeyboardModifierSourceFn = 4,
 };
 
+typedef NS_ENUM(NSInteger, MouseDriverMode) {
+    MouseDriverModeAppKit = 0,
+    MouseDriverModeGCMouse = 1,
+    MouseDriverModeRawHID = 2,
+};
+
 #define REMOTE_MODIFIER_STATE_CTRL  (1 << 0)
 #define REMOTE_MODIFIER_STATE_SHIFT (1 << 1)
 #define REMOTE_MODIFIER_STATE_ALT   (1 << 2)
@@ -411,10 +417,21 @@ typedef enum {
 @property (nonatomic) dispatch_queue_t rumbleQueue;
 @property (nonatomic, strong) NSDictionary *mappings;
 @property (nonatomic) IOHIDManagerRef hidManager;
+@property (nonatomic) IOHIDManagerRef mouseHidManager;
 @property (nonatomic, strong) Controller *controller;
 @property (nonatomic) CVDisplayLinkRef displayLink;
 @property (atomic) CGFloat mouseDeltaX;
 @property (atomic) CGFloat mouseDeltaY;
+@property (nonatomic) dispatch_queue_t mouseDeltaQueue;
+@property (nonatomic) dispatch_source_t mouseDeltaTimer;
+@property (nonatomic) double pendingMouseDeltaX;
+@property (nonatomic) double pendingMouseDeltaY;
+@property (nonatomic) double residualMouseDeltaX;
+@property (nonatomic) double residualMouseDeltaY;
+@property (atomic) NSUInteger mouseDeltaPacketsSent;
+@property (atomic) NSUInteger mouseDeltaPacketsSplit;
+@property (atomic) NSUInteger mouseDeltaEventsDropped;
+@property (nonatomic) BOOL rawMouseHidAvailable;
 @property (nonatomic) UInt8 previousLowFreqMotor;
 @property (nonatomic) UInt8 previousHighFreqMotor;
 @property (atomic) UInt16 nextLowFreqMotor;
@@ -450,6 +467,9 @@ typedef enum {
 @property (nonatomic) id mouseDisconnectObserver;
 
 @property (nonatomic) BOOL useGCMouse;
+@property (nonatomic) BOOL useRawHIDMouse;
+@property (nonatomic) BOOL wantsRawHIDMouse;
+@property (nonatomic) BOOL parsecMouseMode;
 @property (nonatomic) UInt8 remoteModifierState;
 @end
 
@@ -473,6 +493,9 @@ SwitchCommonOutputPacket_t switchRumblePacket;
         [self rumbleSync];
 
         self.controller = [[Controller alloc] init];
+        self.mouseDeltaQueue = dispatch_queue_create("com.moonlight-stream.mouseDeltaQueue", DISPATCH_QUEUE_SERIAL);
+        [self startMouseDeltaSender];
+        [self setupRawMouseHidManagerIfNeeded];
         
         for (GCMouse *mouse in GCMouse.mice) {
             [self registerMouseCallbacks:mouse];
@@ -492,7 +515,6 @@ SwitchCommonOutputPacket_t switchRumblePacket;
         }
         _mappings = [NSDictionary dictionaryWithDictionary:d];
         
-//        [self initializeDisplayLink];
     }
     return self;
 }
@@ -507,8 +529,9 @@ SwitchCommonOutputPacket_t switchRumblePacket;
     }
     
     mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput * _Nonnull mouse, float deltaX, float deltaY) {
-        self.mouseDeltaX += deltaX;
-        self.mouseDeltaY -= deltaY;
+        if (self.shouldSendInputEvents) {
+            [self queueMouseDeltaX:deltaX y:-deltaY];
+        }
     };
     
     mouse.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
@@ -537,6 +560,128 @@ SwitchCommonOutputPacket_t switchRumblePacket;
             LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_X2);
         }
     };
+}
+
+- (void)startMouseDeltaSender {
+    if (self.mouseDeltaTimer != nil || self.mouseDeltaQueue == nil) {
+        return;
+    }
+
+    self.mouseDeltaTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.mouseDeltaQueue);
+    dispatch_source_set_timer(self.mouseDeltaTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC),
+                              NSEC_PER_MSEC,
+                              NSEC_PER_MSEC / 2);
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.mouseDeltaTimer, ^{
+        [weakSelf flushQueuedMouseDeltas];
+    });
+    dispatch_resume(self.mouseDeltaTimer);
+}
+
+- (void)queueMouseDeltaX:(double)deltaX y:(double)deltaY {
+    if (self.mouseDeltaQueue == nil) {
+        self.mouseDeltaEventsDropped++;
+        return;
+    }
+
+    dispatch_async(self.mouseDeltaQueue, ^{
+        self.pendingMouseDeltaX += deltaX;
+        self.pendingMouseDeltaY += deltaY;
+    });
+}
+
+- (int32_t)wholeDeltaFromValue:(double)value residual:(double *)residual {
+    double combined = value + *residual;
+    int32_t whole = (int32_t)trunc(combined);
+    *residual = combined - whole;
+    return whole;
+}
+
+- (void)flushQueuedMouseDeltas {
+    if (!self.shouldSendInputEvents) {
+        self.pendingMouseDeltaX = 0;
+        self.pendingMouseDeltaY = 0;
+        self.residualMouseDeltaX = 0;
+        self.residualMouseDeltaY = 0;
+        return;
+    }
+
+    int32_t deltaX = [self wholeDeltaFromValue:self.pendingMouseDeltaX residual:&_residualMouseDeltaX];
+    int32_t deltaY = [self wholeDeltaFromValue:self.pendingMouseDeltaY residual:&_residualMouseDeltaY];
+    self.pendingMouseDeltaX = 0;
+    self.pendingMouseDeltaY = 0;
+
+    while (deltaX != 0 || deltaY != 0) {
+        int16_t chunkX = (int16_t)MAX(INT16_MIN, MIN(INT16_MAX, deltaX));
+        int16_t chunkY = (int16_t)MAX(INT16_MIN, MIN(INT16_MAX, deltaY));
+
+        LiSendMouseMoveEvent(chunkX, chunkY);
+        self.mouseDeltaPacketsSent++;
+
+        deltaX -= chunkX;
+        deltaY -= chunkY;
+        if (deltaX != 0 || deltaY != 0) {
+            self.mouseDeltaPacketsSplit++;
+        }
+    }
+}
+
+static void rawMouseHIDCallback(void *context, IOReturn result, void *sender, IOHIDValueRef value) {
+    HIDSupport *support = (__bridge HIDSupport *)context;
+    if (support == nil || !support.useRawHIDMouse || !support.shouldSendInputEvents) {
+        return;
+    }
+
+    IOHIDElementRef element = IOHIDValueGetElement(value);
+    if (IOHIDElementGetUsagePage(element) != kHIDPage_GenericDesktop || !IOHIDElementIsRelative(element)) {
+        return;
+    }
+
+    uint32_t usage = IOHIDElementGetUsage(element);
+    CFIndex delta = IOHIDValueGetIntegerValue(value);
+    if (delta == 0) {
+        return;
+    }
+
+    if (usage == kHIDUsage_GD_X) {
+        [support queueMouseDeltaX:(double)delta y:0];
+    }
+    else if (usage == kHIDUsage_GD_Y) {
+        [support queueMouseDeltaX:0 y:(double)delta];
+    }
+}
+
+- (void)setupRawMouseHidManagerIfNeeded {
+    if (!self.wantsRawHIDMouse || self.mouseHidManager != NULL) {
+        return;
+    }
+
+    self.mouseHidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (self.mouseHidManager == NULL) {
+        Log(LOG_W, @"Raw HID mouse manager unavailable; falling back to AppKit mouse deltas");
+        self.rawMouseHidAvailable = NO;
+        return;
+    }
+
+    NSDictionary *match = @{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop),
+                            @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Mouse)};
+    IOHIDManagerSetDeviceMatching(self.mouseHidManager, (__bridge CFDictionaryRef)match);
+    IOHIDManagerRegisterInputValueCallback(self.mouseHidManager, rawMouseHIDCallback, (__bridge void *)self);
+    IOHIDManagerScheduleWithRunLoop(self.mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    IOReturn openResult = IOHIDManagerOpen(self.mouseHidManager, kIOHIDOptionsTypeNone);
+    if (openResult != kIOReturnSuccess) {
+        Log(LOG_W, @"Raw HID mouse open failed (%d); falling back to AppKit mouse deltas", openResult);
+        IOHIDManagerUnscheduleFromRunLoop(self.mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        CFRelease(self.mouseHidManager);
+        self.mouseHidManager = NULL;
+        self.rawMouseHidAvailable = NO;
+        return;
+    }
+
+    self.rawMouseHidAvailable = YES;
 }
 
 -(void)unregisterMouseCallbacks:(GCMouse*)mouse API_AVAILABLE(macos(11.0)) {
@@ -768,13 +913,13 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)mouseMoved:(NSEvent *)event {
-    if (self.useGCMouse) {
+    if (self.useGCMouse || self.useRawHIDMouse) {
         return;
     }
     
     if (event.deltaX != 0 || event.deltaY != 0) {
         if (self.shouldSendInputEvents) {
-            LiSendMouseMoveEvent(event.deltaX, event.deltaY);
+            [self queueMouseDeltaX:event.deltaX y:event.deltaY];
         }
     }
 }
@@ -1240,7 +1385,31 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
 }
 
 - (BOOL)useGCMouse {
-    return [SettingsClass mouseDriverFor:self.host.uuid];
+    return [self mouseDriverMode] == MouseDriverModeGCMouse;
+}
+
+- (BOOL)useRawHIDMouse {
+    return self.wantsRawHIDMouse && self.rawMouseHidAvailable;
+}
+
+- (BOOL)wantsRawHIDMouse {
+    MouseDriverMode mode = [self mouseDriverMode];
+    return mode == MouseDriverModeRawHID || (mode == MouseDriverModeAppKit && self.parsecMouseMode);
+}
+
+- (BOOL)parsecMouseMode {
+    return [SettingsClass parsecMouseModeFor:self.host.uuid];
+}
+
+- (MouseDriverMode)mouseDriverMode {
+    NSInteger driver = [SettingsClass mouseDriverFor:self.host.uuid];
+    if (driver == MouseDriverModeGCMouse) {
+        return MouseDriverModeGCMouse;
+    }
+    if (driver == MouseDriverModeRawHID) {
+        return MouseDriverModeRawHID;
+    }
+    return MouseDriverModeAppKit;
 }
 
 - (NSInteger)controllerDriver {
@@ -1945,6 +2114,11 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
         CVDisplayLinkRelease(_displayLink);
         _displayLink = NULL;
     }
+
+    if (_mouseDeltaTimer != nil) {
+        dispatch_source_cancel(_mouseDeltaTimer);
+        _mouseDeltaTimer = nil;
+    }
     
     self.closeRumble = YES;
     self.isRumbleTimer = NO;
@@ -1957,6 +2131,13 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
         IOHIDManagerClose(_hidManager, kIOHIDOptionsTypeNone);
         CFRelease(_hidManager);
         _hidManager = NULL;
+    }
+
+    if (_mouseHidManager != NULL) {
+        IOHIDManagerUnscheduleFromRunLoop(_mouseHidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDManagerClose(_mouseHidManager, kIOHIDOptionsTypeNone);
+        CFRelease(_mouseHidManager);
+        _mouseHidManager = NULL;
     }
 }
 

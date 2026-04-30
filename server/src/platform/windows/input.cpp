@@ -7,6 +7,10 @@
 // platform includes
 #include <Windows.h>
 
+#ifndef MOUSEEVENTF_MOVE_NOCOALESCE
+  #define MOUSEEVENTF_MOVE_NOCOALESCE 0x2000
+#endif
+
 // standard includes
 #include <cmath>
 #include <thread>
@@ -530,7 +534,7 @@ namespace platf {
     i.type = INPUT_MOUSE;
     auto &mi = i.mi;
 
-    mi.dwFlags = MOUSEEVENTF_MOVE;
+    mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
     mi.dx = deltaX;
     mi.dy = deltaY;
 
@@ -1769,6 +1773,8 @@ namespace platf {
     } else {
       BOOST_LOG(warning) << "Touch input requires Windows 10 1809 or later"sv;
     }
+
+    caps |= platform_caps::cursor_feedback;
 
     return caps;
   }

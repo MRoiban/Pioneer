@@ -12,6 +12,12 @@ This repository is organized as a two-module workspace for Moonlight client and 
 - Client: open `client/Moonlight.xcodeproj` in Xcode.
 - Server: configure/build from `server/CMakeLists.txt`.
 
+## Windows Server Build
+
+Sunshine does not support cross-compiling Windows builds from macOS or Linux. Build the `server/` module on the target Windows architecture.
+
+Use the explicit monorepo instructions in `server/WINDOWS_BUILD.md`.
+
 ## Sunshine Upstream Sync
 
 Sunshine is vendored into `server/` with `git subtree`.
