@@ -325,6 +325,26 @@ namespace nvenc {
       vui_config.bitstreamRestrictionFlag = 1;
     };
 
+    // Low-latency intra-refresh tuning (matches Parsec-style sub-second refresh window).
+    // Period 60 = a full progressive refresh roughly once per second at 60fps.
+    auto apply_intra_refresh = [&](auto &format_config) {
+      if (client_config.enableIntraRefresh != 1) {
+        return;
+      }
+      if (!get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
+        BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
+        return;
+      }
+      format_config.enableIntraRefresh = 1;
+      format_config.intraRefreshPeriod = 60;
+      format_config.intraRefreshCnt = 60;
+      if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
+        format_config.singleSliceIntraRefresh = 1;
+      } else {
+        BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
+      }
+    };
+
     switch (client_config.videoFormat) {
       case 0:
         {
@@ -340,6 +360,7 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
+          apply_intra_refresh(format_config);
           break;
         }
 
@@ -355,20 +376,7 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFramesInDPB, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_hevc);
           fill_h264_hevc_vui(format_config.hevcVUIParameters);
-          if (client_config.enableIntraRefresh == 1) {
-            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-              format_config.enableIntraRefresh = 1;
-              format_config.intraRefreshPeriod = 300;
-              format_config.intraRefreshCnt = 299;
-              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
-                format_config.singleSliceIntraRefresh = 1;
-              } else {
-                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
-              }
-            } else {
-              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
-            }
-          }
+          apply_intra_refresh(format_config);
           break;
         }
 

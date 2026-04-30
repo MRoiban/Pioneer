@@ -89,7 +89,7 @@
         if ([weakSelf isOurWindowTheWindowInNotiifcation:note]) {
             if ([weakSelf.view.window isKeyWindow]) {
                 [weakSelf uncaptureMouse];
-                [weakSelf captureMouse];
+                [weakSelf captureMousePreservingCursor:NO];
             }
         }
     }];
@@ -100,7 +100,7 @@
                 if ([weakSelf isWindowFullscreen]) {
                     if ([weakSelf.view.window isKeyWindow]) {
                         [weakSelf uncaptureMouse];
-                        [weakSelf captureMouse];
+                        [weakSelf captureMousePreservingCursor:NO];
                     }
                 }
             }
@@ -120,8 +120,9 @@
             if ([weakSelf isWindowInCurrentSpace]) {
                 if ([weakSelf isWindowFullscreen]) {
                     if ([weakSelf.view.window isKeyWindow]) {
-                        [weakSelf uncaptureMouse];
-                        [weakSelf captureMouse];
+                        if (!weakSelf.hidSupport.shouldSendInputEvents) {
+                            [weakSelf captureMousePreservingCursor:YES];
+                        }
                     }
                 }
             }
@@ -218,12 +219,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         return;
     }
 
-    NSRect viewInWindow = [self.view convertRect:self.view.bounds toView:nil];
-    NSRect viewInScreen = [window convertRectToScreen:viewInWindow];
-    self.parsecViewScreenOriginX = NSMinX(viewInScreen);
-    self.parsecViewScreenOriginY = NSMinY(viewInScreen);
-    self.parsecViewWidth = MAX(1, self.view.bounds.size.width);
-    self.parsecViewHeight = MAX(1, self.view.bounds.size.height);
+    [self updateParsecViewMetrics];
 
     NSPoint windowPoint = window.mouseLocationOutsideOfEventStream;
     NSPoint viewPoint = [self.view convertPoint:windowPoint fromView:nil];
@@ -239,6 +235,41 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     self.parsecLastLocalCursorPoint = overlayPoint;
     self.parsecLastLocalMoveTime = CFAbsoluteTimeGetCurrent();
     [self.streamView moveHostCursorToPoint:overlayPoint];
+}
+
+- (void)updateParsecViewMetrics {
+    NSWindow *window = self.view.window;
+    if (window == nil) {
+        return;
+    }
+
+    NSRect viewInWindow = [self.view convertRect:self.view.bounds toView:nil];
+    NSRect viewInScreen = [window convertRectToScreen:viewInWindow];
+    self.parsecViewScreenOriginX = NSMinX(viewInScreen);
+    self.parsecViewScreenOriginY = NSMinY(viewInScreen);
+    self.parsecViewWidth = MAX(1, self.view.bounds.size.width);
+    self.parsecViewHeight = MAX(1, self.view.bounds.size.height);
+}
+
+- (BOOL)sendParsecPositionAtViewPoint:(NSPoint)viewPoint {
+    CGFloat width = MAX(1, self.parsecViewWidth);
+    CGFloat height = MAX(1, self.parsecViewHeight);
+    if (viewPoint.x < 0 || viewPoint.y < 0 || viewPoint.x > width || viewPoint.y > height) {
+        return NO;
+    }
+
+    short referenceWidth = (short)MAX(1, MIN(INT16_MAX, lround(width)));
+    short referenceHeight = (short)MAX(1, MIN(INT16_MAX, lround(height)));
+    short x = (short)MAX(0, MIN(referenceWidth, lround(viewPoint.x)));
+    short y = (short)MAX(0, MIN(referenceHeight, lround(height - viewPoint.y)));
+    if (x == self.parsecLastSentX && y == self.parsecLastSentY) {
+        return YES;
+    }
+
+    self.parsecLastSentX = x;
+    self.parsecLastSentY = y;
+    LiSendMousePositionEvent(x, y, referenceWidth, referenceHeight);
+    return YES;
 }
 
 - (void)startParsecPositionSender {
@@ -286,19 +317,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     CGPoint mouse = [NSEvent mouseLocation];
     CGFloat localX = mouse.x - originX;
     CGFloat localY = (originY + height) - mouse.y;
-    if (localX < 0 || localY < 0 || localX > width || localY > height) {
-        return;
-    }
-    short referenceWidth = (short)MAX(1, MIN(INT16_MAX, lround(width)));
-    short referenceHeight = (short)MAX(1, MIN(INT16_MAX, lround(height)));
-    short x = (short)MAX(0, MIN(referenceWidth, lround(localX)));
-    short y = (short)MAX(0, MIN(referenceHeight, lround(localY)));
-    if (x == self.parsecLastSentX && y == self.parsecLastSentY) {
-        return;
-    }
-    self.parsecLastSentX = x;
-    self.parsecLastSentY = y;
-    LiSendMousePositionEvent(x, y, referenceWidth, referenceHeight);
+    [self sendParsecPositionAtViewPoint:NSMakePoint(localX, height - localY)];
 }
 
 - (void)flagsChanged:(NSEvent *)event {
@@ -512,15 +531,23 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)captureMouse {
+    [self captureMousePreservingCursor:NO];
+}
+
+- (void)captureMousePreservingCursor:(BOOL)preserveCursor {
     if (self.parsecMouseMode && !self.parsecRelativeMouseMode) {
         [self captureDesktopMouse];
         return;
     }
 
-    [self captureRelativeMouse];
+    [self captureRelativeMousePreservingCursor:preserveCursor];
 }
 
 - (void)captureRelativeMouse {
+    [self captureRelativeMousePreservingCursor:NO];
+}
+
+- (void)captureRelativeMousePreservingCursor:(BOOL)preserveCursor {
     [self stopParsecCursorDisplayLink];
     [self stopParsecPositionSender];
     [self.streamView setHostCursorVisible:NO];
@@ -530,11 +557,13 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         self.cursorHiddenCounter ++;
     }
     
-    CGRect rectInWindow = [self.view convertRect:self.view.bounds toView:nil];
-    CGRect rectInScreen = [self.view.window convertRectToScreen:rectInWindow];
-    CGFloat screenHeight = self.view.window.screen.frame.size.height;
-    CGPoint cursorPoint = CGPointMake(CGRectGetMidX(rectInScreen), screenHeight - CGRectGetMidY(rectInScreen));
-    CGWarpMouseCursorPosition(cursorPoint);
+    if (!preserveCursor) {
+        CGRect rectInWindow = [self.view convertRect:self.view.bounds toView:nil];
+        CGRect rectInScreen = [self.view.window convertRectToScreen:rectInWindow];
+        CGFloat screenHeight = self.view.window.screen.frame.size.height;
+        CGPoint cursorPoint = CGPointMake(CGRectGetMidX(rectInScreen), screenHeight - CGRectGetMidY(rectInScreen));
+        CGWarpMouseCursorPosition(cursorPoint);
+    }
     
     [self enableMenuItems:NO];
     
@@ -547,9 +576,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
 
 - (void)captureDesktopMouse {
     CGAssociateMouseAndMouseCursorPosition(YES);
-    if (self.cursorHiddenCounter != 0) {
-        [NSCursor unhide];
-        self.cursorHiddenCounter --;
+    if (self.cursorHiddenCounter == 0) {
+        [NSCursor hide];
+        self.cursorHiddenCounter ++;
     }
     [self.streamView setHostCursorVisible:YES];
 
@@ -559,6 +588,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     self.hidSupport.shouldSendInputEvents = YES;
     self.controllerSupport.shouldSendInputEvents = YES;
     self.view.window.acceptsMouseMovedEvents = YES;
+    [self updateParsecViewMetrics];
     [self startParsecCursorDisplayLink];
     [self startParsecPositionSender];
 }
@@ -586,6 +616,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     if (!self.parsecMouseMode || self.parsecRelativeMouseMode || !self.hidSupport.shouldSendInputEvents) {
         return NO;
     }
+    [self updateParsecViewMetrics];
+    NSPoint viewPoint = [self.view convertPoint:event.locationInWindow fromView:nil];
+    [self sendParsecPositionAtViewPoint:viewPoint];
     return YES;
 }
 
@@ -638,7 +671,16 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     } else {
         NSString *mouseType = self.parsecRelativeMouseMode ? @"Relative" : @"Desktop";
         NSString *sunshineStatus = self.parsecCursorFeedbackReceived ? @"Active" : @"Waiting";
-        message = [NSString stringWithFormat:@"Mouse Mode: ON  |  %@  |  Sunshine: %@", mouseType, sunshineStatus];
+        NSString *inputPath;
+        if (self.hidSupport.rawHIDMouseActive) {
+            inputPath = @"Raw HID";
+        } else if (self.hidSupport.rawHIDMouseRequested) {
+            inputPath = @"AppKit (Raw HID denied — grant Input Monitoring)";
+        } else {
+            inputPath = @"AppKit";
+        }
+        message = [NSString stringWithFormat:@"Mouse Mode: ON  |  %@  |  Sunshine: %@  |  Input: %@",
+                   mouseType, sunshineStatus, inputPath];
     }
 
     [self.streamView toggleStatsOverlay:message];
@@ -983,8 +1025,23 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         }
         CFAbsoluteTime nowTime = CFAbsoluteTimeGetCurrent();
         BOOL recentLocalMove = (nowTime - self.parsecLastLocalMoveTime) < 0.1;
-        if (!recentLocalMove || displayedRelativeMode) {
+        if (displayedRelativeMode) {
             [self.streamView moveHostCursorToPoint:hostCursorPoint];
+        } else {
+            CGFloat dx = hostCursorPoint.x - self.parsecLastLocalCursorPoint.x;
+            CGFloat dy = hostCursorPoint.y - self.parsecLastLocalCursorPoint.y;
+            CGFloat err = sqrt(dx * dx + dy * dy);
+            const CGFloat snapThreshold = 80.0;
+            const CGFloat smoothFactor = 0.30;
+            if (!recentLocalMove || err > snapThreshold) {
+                self.parsecLastLocalCursorPoint = hostCursorPoint;
+                [self.streamView moveHostCursorToPoint:hostCursorPoint];
+            } else if (err > 0.5) {
+                NSPoint blended = NSMakePoint(self.parsecLastLocalCursorPoint.x + dx * smoothFactor,
+                                              self.parsecLastLocalCursorPoint.y + dy * smoothFactor);
+                self.parsecLastLocalCursorPoint = blended;
+                [self.streamView moveHostCursorToPoint:blended];
+            }
         }
         [self.streamView setHostCursorVisible:visible && !displayedRelativeMode];
     });

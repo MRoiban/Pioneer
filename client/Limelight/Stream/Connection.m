@@ -46,6 +46,8 @@ static int audioBufferWriteIndex;
 static int audioBufferReadIndex;
 static int audioBufferStride;
 static int audioSamplesPerFrame;
+static int audioMaxSamplesPerFrame;
+static int* audioBufferFrameCounts;
 static short* audioCircularBuffer;
 
 static int channelCount;
@@ -53,10 +55,23 @@ static float audioVolumeMultiplier = 1.0f;
 static NSString *hostAddress;
 
 #define AUDIO_QUEUE_BUFFERS 4
+#define MAX_OPUS_FRAME_DURATION_MS 120
 
 static AudioQueueRef audioQueue;
 static AudioQueueBufferRef audioBuffers[AUDIO_QUEUE_BUFFERS];
 static VideoDecoderRenderer* renderer;
+
+static short ClampAudioSample(float sample)
+{
+    if (sample > 32767.0f) {
+        return 32767;
+    }
+    else if (sample < -32768.0f) {
+        return -32768;
+    }
+
+    return (short)sample;
+}
 
 int DrDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags)
 {
@@ -126,11 +141,20 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION originalOpusC
     // Initialize the circular buffer
     audioBufferWriteIndex = audioBufferReadIndex = 0;
     audioSamplesPerFrame = opusConfig.samplesPerFrame;
-    audioBufferStride = opusConfig.channelCount * opusConfig.samplesPerFrame;
+    audioMaxSamplesPerFrame = opusConfig.sampleRate * MAX_OPUS_FRAME_DURATION_MS / 1000;
+    audioBufferStride = opusConfig.channelCount * audioMaxSamplesPerFrame;
     audioBufferEntries = CIRCULAR_BUFFER_DURATION / (opusConfig.samplesPerFrame / (opusConfig.sampleRate / 1000));
-    audioCircularBuffer = malloc(audioBufferEntries * audioBufferStride * sizeof(short));
-    if (audioCircularBuffer == NULL) {
+    if (audioBufferEntries <= AUDIO_QUEUE_BUFFERS) {
+        audioBufferEntries = AUDIO_QUEUE_BUFFERS + 1;
+    }
+    audioBufferFrameCounts = calloc(audioBufferEntries, sizeof(*audioBufferFrameCounts));
+    audioCircularBuffer = malloc(audioBufferEntries * audioBufferStride * sizeof(*audioCircularBuffer));
+    if (audioBufferFrameCounts == NULL || audioCircularBuffer == NULL) {
         Log(LOG_E, @"Error allocating output queue\n");
+        free(audioBufferFrameCounts);
+        free(audioCircularBuffer);
+        audioBufferFrameCounts = NULL;
+        audioCircularBuffer = NULL;
         return -1;
     }
     
@@ -212,7 +236,7 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION originalOpusC
     }
     
     for (int i = 0; i < AUDIO_QUEUE_BUFFERS; i++) {
-        status = AudioQueueAllocateBuffer(audioQueue, audioFormat.mBytesPerFrame * opusConfig.samplesPerFrame, &audioBuffers[i]);
+        status = AudioQueueAllocateBuffer(audioQueue, audioFormat.mBytesPerFrame * audioMaxSamplesPerFrame, &audioBuffers[i]);
         if (status != noErr) {
             Log(LOG_E, @"Error allocating output buffer: %d\n", status);
             return status;
@@ -249,6 +273,10 @@ void ArCleanup(void)
         free(audioCircularBuffer);
         audioCircularBuffer = NULL;
     }
+    if (audioBufferFrameCounts != NULL) {
+        free(audioBufferFrameCounts);
+        audioBufferFrameCounts = NULL;
+    }
     
 #if TARGET_OS_IPHONE
     // Audio session is now inactive
@@ -267,13 +295,14 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     }
     
     decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
-                                        (short*)&audioCircularBuffer[audioBufferWriteIndex * audioBufferStride], audioSamplesPerFrame, 0);
+                                        (short*)&audioCircularBuffer[audioBufferWriteIndex * audioBufferStride], audioMaxSamplesPerFrame, 0);
     if (decodeLen > 0) {
         // Apply volume adjustment to each audio sample
         short* buffer = &audioCircularBuffer[audioBufferWriteIndex * audioBufferStride];
         for (int i = 0; i < decodeLen * channelCount; i++) {
-            buffer[i] = (short)(buffer[i] * audioVolumeMultiplier);
+            buffer[i] = ClampAudioSample(buffer[i] * audioVolumeMultiplier);
         }
+        audioBufferFrameCounts[audioBufferWriteIndex] = decodeLen;
         
         // Use a full memory barrier to ensure the circular buffer is written before incrementing the index
         __sync_synchronize();
@@ -467,7 +496,7 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
 //#if TARGET_OS_IPHONE
     // RFI doesn't work properly with HEVC on iOS 11 with an iPhone SE (at least)
     // It doesnt work on macOS either, tested with Network Link Conditioner.
-    _drCallbacks.capabilities = CAPABILITY_PULL_RENDERER;
+    _drCallbacks.capabilities = CAPABILITY_PULL_RENDERER | CAPABILITY_SLICES_PER_FRAME(4);
 //#endif
 
     LiInitializeAudioCallbacks(&_arCallbacks);
@@ -494,16 +523,22 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
 static void FillOutputBuffer(void *aqData,
                              AudioQueueRef inAQ,
                              AudioQueueBufferRef inBuffer) {
-    inBuffer->mAudioDataByteSize = audioBufferStride * sizeof(short);
-    
-    assert(inBuffer->mAudioDataByteSize == inBuffer->mAudioDataBytesCapacity);
+    int framesToSubmit = audioSamplesPerFrame;
     
     // If the indexes aren't equal, we have a sample
     if (audioBufferWriteIndex != audioBufferReadIndex) {
+        framesToSubmit = audioBufferFrameCounts[audioBufferReadIndex];
+        if (framesToSubmit <= 0 || framesToSubmit > audioMaxSamplesPerFrame) {
+            framesToSubmit = audioSamplesPerFrame;
+        }
+        inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
+        assert(inBuffer->mAudioDataByteSize <= inBuffer->mAudioDataBytesCapacity);
+
         // Copy data to the audio buffer
         memcpy(inBuffer->mAudioData,
                &audioCircularBuffer[audioBufferReadIndex * audioBufferStride],
                inBuffer->mAudioDataByteSize);
+        audioBufferFrameCounts[audioBufferReadIndex] = 0;
         
         // Use a full memory barrier to ensure the circular buffer is read before incrementing the index
         __sync_synchronize();
@@ -514,6 +549,8 @@ static void FillOutputBuffer(void *aqData,
     }
     else {
         // No data, so play silence
+        inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
+        assert(inBuffer->mAudioDataByteSize <= inBuffer->mAudioDataBytesCapacity);
         memset(inBuffer->mAudioData, 0, inBuffer->mAudioDataByteSize);
     }
     

@@ -1746,6 +1746,27 @@ namespace platf {
     return utf_utils::to_utf8(hostname);
   }
 
+  // Manual-reset event signaled by signal_capture_kick(); used to wake the capture
+  // loop's high-precision timer early when an input packet arrives. Lazily created
+  // on first use and intentionally never destroyed (one HANDLE per process).
+  static HANDLE get_capture_kick_event() {
+    static HANDLE evt = []() {
+      HANDLE h = CreateEventW(nullptr, TRUE /*manual reset*/, FALSE /*initial state*/, nullptr);
+      if (!h) {
+        BOOST_LOG(error) << "Unable to create capture kick event: " << GetLastError();
+      }
+      return h;
+    }();
+    return evt;
+  }
+
+  void signal_capture_kick() {
+    HANDLE evt = get_capture_kick_event();
+    if (evt) {
+      SetEvent(evt);
+    }
+  }
+
   class win32_high_precision_timer: public high_precision_timer {
   public:
     win32_high_precision_timer() {
@@ -1782,7 +1803,22 @@ namespace platf {
       LARGE_INTEGER due_time;
       due_time.QuadPart = duration.count() / -100;
       SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false);
-      WaitForSingleObject(timer, INFINITE);
+
+      HANDLE kick = get_capture_kick_event();
+      if (kick) {
+        // Wait on either the timer or an input-driven kick. Reset the kick AFTER
+        // the wait so inputs that arrived while the caller was processing the
+        // previous frame still wake us immediately on the next sleep.
+        HANDLE handles[2] = {timer, kick};
+        DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        if (result == WAIT_OBJECT_0 + 1) {
+          ResetEvent(kick);
+          // Cancel the pending timer so the next call gets a fresh schedule
+          CancelWaitableTimer(timer);
+        }
+      } else {
+        WaitForSingleObject(timer, INFINITE);
+      }
     }
 
     operator bool() override {

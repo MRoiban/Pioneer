@@ -562,6 +562,11 @@ namespace platf {
     return std::make_unique<macos_high_precision_timer>();
   }
 
+  void signal_capture_kick() {
+    // Capture-kick wake-up is currently only wired into the Windows DXGI capture
+    // loop. macOS host capture would need its own implementation.
+  }
+
   std::string resolve_render_device() {
     return {};
   }

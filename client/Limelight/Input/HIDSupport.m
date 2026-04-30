@@ -1441,6 +1441,14 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     return self.wantsRawHIDMouse && self.rawMouseHidAvailable;
 }
 
+- (BOOL)rawHIDMouseActive {
+    return self.useRawHIDMouse;
+}
+
+- (BOOL)rawHIDMouseRequested {
+    return self.wantsRawHIDMouse;
+}
+
 - (BOOL)wantsRawHIDMouse {
     MouseDriverMode mode = [self mouseDriverMode];
     return mode == MouseDriverModeRawHID || (mode == MouseDriverModeAppKit && self.parsecMouseMode);

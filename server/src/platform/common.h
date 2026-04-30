@@ -895,6 +895,14 @@ namespace platf {
   std::unique_ptr<high_precision_timer> create_high_precision_timer();
 
   /**
+   * @brief Signal that an input event has arrived. Wakes any capture loop currently
+   *        sleeping between scheduled frames so the next captured frame reflects
+   *        the input with minimal latency. Safe to call from any thread; a no-op on
+   *        platforms whose capture path doesn't subscribe.
+   */
+  void signal_capture_kick();
+
+  /**
    * @brief Check is the current process is running with elevated privileges (e.g. system admin/etc.)
    * @return True if system admin capabilities are present.
    */

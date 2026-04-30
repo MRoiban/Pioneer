@@ -1175,6 +1175,11 @@ namespace platf {
     return std::make_unique<linux_high_precision_timer>();
   }
 
+  void signal_capture_kick() {
+    // Capture-kick wake-up is currently only wired into the Windows DXGI capture
+    // loop. Linux host capture would need its own implementation.
+  }
+
   std::string find_render_node_with_display() {
 #ifdef SUNSHINE_BUILD_DRM
     auto *dir = opendir("/dev/dri");

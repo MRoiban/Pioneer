@@ -1644,11 +1644,13 @@ namespace input {
         if (magic == MOUSE_MOVE_ABS_MAGIC) {
           if (input_data.size() >= sizeof(NV_ABS_MOUSE_MOVE_PACKET)) {
             passthrough(input, (PNV_ABS_MOUSE_MOVE_PACKET) input_data.data());
+            platf::signal_capture_kick();
             return;
           }
         } else if (magic == MOUSE_MOVE_REL_MAGIC_GEN5) {
           if (input_data.size() >= sizeof(NV_REL_MOUSE_MOVE_PACKET)) {
             passthrough(input, (PNV_REL_MOUSE_MOVE_PACKET) input_data.data());
+            platf::signal_capture_kick();
             return;
           }
         }
