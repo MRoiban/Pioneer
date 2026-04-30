@@ -19,6 +19,7 @@
 #import "StreamManager.h"
 #import "VideoDecoderRenderer.h"
 #import "HIDSupport.h"
+#import "AWDLDisabler.h"
 
 #import "Moonlight-Swift.h"
 
@@ -42,6 +43,7 @@
 @property (nonatomic, strong) id windowDidBecomeKeyNotification;
 @property (nonatomic, strong) id windowWillCloseNotification;
 @property (nonatomic) int cursorHiddenCounter;
+@property (nonatomic) BOOL awdlDisablerStarted;
 
 @property (nonatomic) IOPMAssertionID powerAssertionID;
 
@@ -114,6 +116,7 @@
                 if (weakSelf.useSystemControllerDriver) {
                     [weakSelf.controllerSupport cleanup];
                 }
+                [weakSelf stopAWDLDisablerIfNeeded];
                 [weakSelf.streamMan stopStream];
             });
         }
@@ -144,6 +147,7 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self.windowDidBecomeKeyNotification];
     [[NSNotificationCenter defaultCenter] removeObserver:self.windowWillCloseNotification];
 
+    [self stopAWDLDisablerIfNeeded];
     [self.hidSupport tearDownHidManager];
     self.hidSupport = nil;
 }
@@ -425,6 +429,7 @@
 
 - (void)closeWindowFromMainQueueWithMessage:(NSString *)message {
     [self.hidSupport releaseAllModifierKeys];
+    [self stopAWDLDisablerIfNeeded];
     
     dispatch_async(dispatch_get_main_queue(), ^{
         [self uncaptureMouse];
@@ -447,6 +452,35 @@
 
 #pragma mark - Streaming Operations
 
+- (void)startAWDLDisablerIfNeeded {
+    if (self.awdlDisablerStarted) {
+        return;
+    }
+
+    if (![SettingsClass disableAWDLDuringStreamFor:self.app.host.uuid]) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.streamView.statusText = @"Waiting for network permission...";
+    });
+
+    if ([AWDLDisabler startMonitoring]) {
+        self.awdlDisablerStarted = YES;
+    } else {
+        Log(LOG_W, @"AWDL disabler is enabled but did not start");
+    }
+}
+
+- (void)stopAWDLDisablerIfNeeded {
+    if (!self.awdlDisablerStarted) {
+        return;
+    }
+
+    [AWDLDisabler stopMonitoring];
+    self.awdlDisablerStarted = NO;
+}
+
 - (void)prepareForStreaming {
     StreamConfiguration *streamConfig = [[StreamConfiguration alloc] init];
     
@@ -463,6 +497,7 @@
 
     streamConfig.frameRate = [streamSettings.framerate intValue];
     streamConfig.bitRate = [streamSettings.bitrate intValue];
+    streamConfig.framePacing = [SettingsClass framePacingFor:self.app.host.uuid];
     streamConfig.optimizeGameSettings = streamSettings.optimizeGames;
     streamConfig.playAudioOnPC = streamSettings.playAudioOnPC;
     streamConfig.allowHevc = streamSettings.useHevc;
@@ -479,6 +514,7 @@
         }
     }
     self.hidSupport = [[HIDSupport alloc] init:self.app.host];
+    [self startAWDLDisablerIfNeeded];
     
     self.streamMan = [[StreamManager alloc] initWithConfig:streamConfig renderView:self.view connectionCallbacks:self];
     NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];

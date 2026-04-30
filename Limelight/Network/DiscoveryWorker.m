@@ -43,10 +43,13 @@ static const float POLL_RATE = 2.0f; // Poll every 2 seconds
 - (NSArray*) getHostAddressList {
     NSMutableArray *array = [[NSMutableArray alloc] initWithCapacity:3];
 
+    if (_host.address != nil && [Utils addressStringHasExplicitPort:_host.address]) {
+        [array addObject:_host.address];
+    }
     if (_host.localAddress != nil) {
         [array addObject:_host.localAddress];
     }
-    if (_host.address != nil) {
+    if (_host.address != nil && ![Utils addressStringHasExplicitPort:_host.address]) {
         [array addObject:_host.address];
     }
     if (_host.externalAddress != nil) {

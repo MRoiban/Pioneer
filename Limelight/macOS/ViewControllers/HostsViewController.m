@@ -26,6 +26,7 @@
 #import "DataManager.h"
 #import "PairManager.h"
 #import "WakeOnLanManager.h"
+#import "Utils.h"
 
 @interface HostsViewController () <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate, NSControlTextEditingDelegate, HostsViewControllerDelegate, DiscoveryCallback, PairCallback, NSMenuItemValidation>
 @property (nonatomic, strong) NSArray<TemporaryHost *> *hosts;
@@ -176,7 +177,7 @@
 
     NSTextField *inputField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
     inputField.identifier = @"addHostField";
-    inputField.placeholderString = @"IP address";
+    inputField.placeholderString = @"IP address or IP:port";
     inputField.delegate = self;
     [alert setAccessoryView:inputField];
 
@@ -198,7 +199,7 @@
 }
 
 - (void)addHostManuallyHandlerWithInputValue:(NSString *)inputValue {
-    NSString* hostAddress = inputValue;
+    NSString* hostAddress = [inputValue trim];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [self.discMan discoverHost:hostAddress withCallback:^(TemporaryHost* host, NSString* error){
             if (host != nil) {
@@ -327,6 +328,9 @@
         
         // Initialize the non-persistent host state
         for (TemporaryHost* host in self.hosts) {
+            if (host.address != nil && [Utils addressStringHasExplicitPort:host.address]) {
+                host.activeAddress = host.address;
+            }
             if (host.activeAddress == nil) {
                 host.activeAddress = host.localAddress;
             }

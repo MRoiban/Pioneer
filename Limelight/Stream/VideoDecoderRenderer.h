@@ -16,6 +16,7 @@
 
 - (id)initWithView:(OSView *)view;
 
+- (void)setFramePacingMode:(int)framePacingMode;
 - (void)setupWithVideoFormat:(int)videoFormat frameRate:(int)frameRate;
 - (void)start;
 - (void)stop;

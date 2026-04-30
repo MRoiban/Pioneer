@@ -27,6 +27,19 @@ struct KeyMapping {
     short windows;
 };
 
+typedef NS_ENUM(NSInteger, KeyboardModifierSource) {
+    KeyboardModifierSourceControl = 0,
+    KeyboardModifierSourceShift = 1,
+    KeyboardModifierSourceOption = 2,
+    KeyboardModifierSourceCommand = 3,
+    KeyboardModifierSourceFn = 4,
+};
+
+#define REMOTE_MODIFIER_STATE_CTRL  (1 << 0)
+#define REMOTE_MODIFIER_STATE_SHIFT (1 << 1)
+#define REMOTE_MODIFIER_STATE_ALT   (1 << 2)
+#define REMOTE_MODIFIER_STATE_WIN   (1 << 3)
+
 static struct KeyMapping keys[] = {
     {kVK_ANSI_A, 'A'},
     {kVK_ANSI_B, 'B'},
@@ -437,6 +450,7 @@ typedef enum {
 @property (nonatomic) id mouseDisconnectObserver;
 
 @property (nonatomic) BOOL useGCMouse;
+@property (nonatomic) UInt8 remoteModifierState;
 @end
 
 @implementation HIDSupport
@@ -606,8 +620,74 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     return LiSendKeyboardEvent(keyCode, event.modifierFlags & modifierFlag ? KEY_ACTION_DOWN : KEY_ACTION_UP, [self translateKeyModifierWithEvent:event]);
 }
 
+- (BOOL)usesDefaultKeyboardModifierMapping {
+    return [SettingsClass windowsCtrlSourceFor:self.host.uuid] == KeyboardModifierSourceControl &&
+        [SettingsClass windowsShiftSourceFor:self.host.uuid] == KeyboardModifierSourceShift &&
+        [SettingsClass windowsAltSourceFor:self.host.uuid] == KeyboardModifierSourceOption &&
+        [SettingsClass windowsWinSourceFor:self.host.uuid] == KeyboardModifierSourceCommand;
+}
+
+- (BOOL)modifierSource:(KeyboardModifierSource)source isActiveInEvent:(NSEvent *)event {
+    switch (source) {
+        case KeyboardModifierSourceControl:
+            return (event.modifierFlags & NSEventModifierFlagControl) != 0;
+        case KeyboardModifierSourceShift:
+            return (event.modifierFlags & NSEventModifierFlagShift) != 0;
+        case KeyboardModifierSourceOption:
+            return (event.modifierFlags & NSEventModifierFlagOption) != 0;
+        case KeyboardModifierSourceCommand:
+            return (event.modifierFlags & NSEventModifierFlagCommand) != 0;
+        case KeyboardModifierSourceFn:
+            return (event.modifierFlags & NSEventModifierFlagFunction) != 0;
+    }
+}
+
+- (UInt8)remoteModifierStateForEvent:(NSEvent *)event {
+    UInt8 state = 0;
+
+    if ([self modifierSource:[SettingsClass windowsCtrlSourceFor:self.host.uuid] isActiveInEvent:event]) {
+        state |= REMOTE_MODIFIER_STATE_CTRL;
+    }
+    if ([self modifierSource:[SettingsClass windowsShiftSourceFor:self.host.uuid] isActiveInEvent:event]) {
+        state |= REMOTE_MODIFIER_STATE_SHIFT;
+    }
+    if ([self modifierSource:[SettingsClass windowsAltSourceFor:self.host.uuid] isActiveInEvent:event]) {
+        state |= REMOTE_MODIFIER_STATE_ALT;
+    }
+    if ([self modifierSource:[SettingsClass windowsWinSourceFor:self.host.uuid] isActiveInEvent:event]) {
+        state |= REMOTE_MODIFIER_STATE_WIN;
+    }
+
+    return state;
+}
+
+- (void)sendRemoteModifierStateChangeFrom:(UInt8)oldState to:(UInt8)newState mask:(UInt8)mask keyCode:(unsigned short)keyCode {
+    if ((oldState & mask) == (newState & mask)) {
+        return;
+    }
+
+    LiSendKeyboardEvent(keyCode, (newState & mask) ? KEY_ACTION_DOWN : KEY_ACTION_UP, [self translateRemoteModifierState:newState]);
+}
+
+- (void)sendCustomKeyboardModifierEvents:(NSEvent *)event {
+    UInt8 newState = [self remoteModifierStateForEvent:event];
+    UInt8 oldState = self.remoteModifierState;
+
+    [self sendRemoteModifierStateChangeFrom:oldState to:newState mask:REMOTE_MODIFIER_STATE_CTRL keyCode:0xA2];
+    [self sendRemoteModifierStateChangeFrom:oldState to:newState mask:REMOTE_MODIFIER_STATE_SHIFT keyCode:0xA0];
+    [self sendRemoteModifierStateChangeFrom:oldState to:newState mask:REMOTE_MODIFIER_STATE_ALT keyCode:0xA4];
+    [self sendRemoteModifierStateChangeFrom:oldState to:newState mask:REMOTE_MODIFIER_STATE_WIN keyCode:0x5B];
+
+    self.remoteModifierState = newState;
+}
+
 - (void)flagsChanged:(NSEvent *)event {
     if (self.shouldSendInputEvents) {
+        if (![self usesDefaultKeyboardModifierMapping]) {
+            [self sendCustomKeyboardModifierEvents:event];
+            return;
+        }
+
         switch (event.keyCode) {
             case kVK_Shift:
                 [self sendKeyboardModifierEvent:event withKeyCode:0xA0 andModifierFlag:NSEventModifierFlagShift];
@@ -656,6 +736,7 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)releaseAllModifierKeys {
+    self.remoteModifierState = 0;
     LiSendKeyboardEvent(0x5B, KEY_ACTION_UP, 0);
     LiSendKeyboardEvent(0x5C, KEY_ACTION_UP, 0);
     LiSendKeyboardEvent(0xA0, KEY_ACTION_UP, 0);
@@ -1121,6 +1202,10 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
 }
 
 - (char)translateKeyModifierWithEvent:(NSEvent *)event {
+    if (![self usesDefaultKeyboardModifierMapping]) {
+        return [self translateRemoteModifierState:[self remoteModifierStateForEvent:event]];
+    }
+
     char modifiers = 0;
     if (event.modifierFlags & NSEventModifierFlagShift) {
         modifiers |= MODIFIER_SHIFT;
@@ -1132,6 +1217,23 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
         modifiers |= MODIFIER_ALT;
     }
     if (event.modifierFlags & NSEventModifierFlagCommand) {
+        modifiers |= MODIFIER_META;
+    }
+    return modifiers;
+}
+
+- (char)translateRemoteModifierState:(UInt8)state {
+    char modifiers = 0;
+    if (state & REMOTE_MODIFIER_STATE_SHIFT) {
+        modifiers |= MODIFIER_SHIFT;
+    }
+    if (state & REMOTE_MODIFIER_STATE_CTRL) {
+        modifiers |= MODIFIER_CTRL;
+    }
+    if (state & REMOTE_MODIFIER_STATE_ALT) {
+        modifiers |= MODIFIER_ALT;
+    }
+    if (state & REMOTE_MODIFIER_STATE_WIN) {
         modifiers |= MODIFIER_META;
     }
     return modifiers;
@@ -1778,7 +1880,16 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
 }
 
 - (void)setupHidManager {
-    self.hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (_hidManager != NULL) {
+        [self tearDownHidManager];
+    }
+
+    _hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (_hidManager == NULL) {
+        Log(LOG_E, @"IOHIDManagerCreate() failed");
+        return;
+    }
+
     IOHIDManagerOpen(self.hidManager, kIOHIDOptionsTypeNone);
     
     NSArray *matches = @[
@@ -1829,9 +1940,10 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
         [self unregisterMouseCallbacks:mouse];
     }
     
-    if (self.displayLink != NULL) {
-        CVDisplayLinkStop(self.displayLink);
-        CVDisplayLinkRelease(self.displayLink);
+    if (_displayLink != NULL) {
+        CVDisplayLinkStop(_displayLink);
+        CVDisplayLinkRelease(_displayLink);
+        _displayLink = NULL;
     }
     
     self.closeRumble = YES;
@@ -1840,9 +1952,12 @@ void myHIDDeviceRemovalCallback(void * _Nullable        context,
     
     self.rumbleQueue = nil;
     
-    IOHIDManagerUnscheduleFromRunLoop(self.hidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    IOHIDManagerClose(self.hidManager, kIOHIDOptionsTypeNone);
-    CFRelease(self.hidManager);
+    if (_hidManager != NULL) {
+        IOHIDManagerUnscheduleFromRunLoop(_hidManager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDManagerClose(_hidManager, kIOHIDOptionsTypeNone);
+        CFRelease(_hidManager);
+        _hidManager = NULL;
+    }
 }
 
 

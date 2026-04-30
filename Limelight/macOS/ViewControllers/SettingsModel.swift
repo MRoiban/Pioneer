@@ -6,11 +6,14 @@
 //  Copyright © 2023 Moonlight Game Streaming Project. All rights reserved.
 //
 
+import AppKit
+import Network
 import SwiftUI
 
 struct Host: Identifiable, Hashable {
     let id: String
     let name: String
+    let address: String
 }
 
 class SettingsModel: ObservableObject {
@@ -18,7 +21,11 @@ class SettingsModel: ObservableObject {
         let dataMan = DataManager()
         if let tempHosts = dataMan.getHosts() as? [TemporaryHost] {
             let hosts = tempHosts.map { host in
-                Host(id: host.uuid, name: host.name)
+                Host(
+                    id: host.uuid,
+                    name: host.name,
+                    address: calibrationAddress(for: host)
+                )
             }
             
             return hosts
@@ -72,6 +79,9 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var isCalibratingBitrate = false
+    @Published var bitrateCalibrationProgress: Double = 0
+    @Published var bitrateCalibrationStatus: String?
     @Published var selectedVideoCodec: String {
         didSet {
             saveSettings()
@@ -88,6 +98,11 @@ class SettingsModel: ObservableObject {
         }
     }
     @Published var audioOnPC: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var disableAWDLDuringStream: Bool {
         didSet {
             saveSettings()
         }
@@ -140,6 +155,26 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var selectedWindowsCtrlSource: String {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var selectedWindowsShiftSource: String {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var selectedWindowsAltSource: String {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var selectedWindowsWinSource: String {
+        didSet {
+            saveSettings()
+        }
+    }
     @Published var appArtworkWidth: CGFloat? {
         didSet {
             saveSettings()
@@ -156,7 +191,9 @@ class SettingsModel: ObservableObject {
         }
     }
 
-    static var resolutions: [CGSize] = [CGSizeMake(1280, 720), CGSizeMake(1920, 1080), CGSizeMake(2560, 1440), CGSizeMake(3840, 2160), .zero]
+    static var resolutions: [CGSize] {
+        buildResolutionOptions().map(\.size)
+    }
     static var fpss: [Int] = [30, 60, 90, 120, 144, .zero]
     static var bitrateSteps: [Float] = [
         0.5,
@@ -189,11 +226,16 @@ class SettingsModel: ObservableObject {
         150
     ]
     static var videoCodecs: [String] = ["H.264", "H.265"]
-    static var pacingOptions: [String] = ["Lowest Latency", "Smoothest Video"]
+    static let pacingAuto = "Auto"
+    static let pacingLowestLatency = "Lowest Latency"
+    static let pacingBalanced = "Balanced"
+    static let pacingSmoothest = "Smoothest"
+    static var pacingOptions: [String] = [pacingAuto, pacingLowestLatency, pacingBalanced, pacingSmoothest]
     static var multiControllerModes: [String] = ["Single", "Auto"]
 
     static var controllerDrivers: [String] = ["HID", "MFi"]
     static var mouseDrivers: [String] = ["HID", "MFi"]
+    static var keyboardModifierSources: [String] = ["Control", "Shift", "Option", "Command", "Fn"]
 
     static let defaultResolution = CGSizeMake(1920, 1080)
     static let defaultCustomResWidth: CGFloat? = nil
@@ -212,8 +254,9 @@ class SettingsModel: ObservableObject {
     }()
     static let defaultVideoCodec = "H.264"
     static let defaultHdr = false
-    static let defaultPacingOptions = "Smoothest Video"
+    static let defaultPacingOptions = pacingAuto
     static let defaultAudioOnPC = false
+    static let defaultDisableAWDLDuringStream = false
     static let defaultVolumeLevel = 1.0
     static let defaultMultiControllerMode = "Auto"
     static let defaultSwapButtons = false
@@ -223,9 +266,105 @@ class SettingsModel: ObservableObject {
     static let defaultControllerDriver = "HID"
     static let defaultMouseDriver = "HID"
     static let defaultEmulateGuide = false
+    static let defaultWindowsCtrlSource = "Control"
+    static let defaultWindowsShiftSource = "Shift"
+    static let defaultWindowsAltSource = "Option"
+    static let defaultWindowsWinSource = "Command"
+    static var defaultWindowsCtrlSourceIndex: Int {
+        getInt(from: defaultWindowsCtrlSource, in: keyboardModifierSources)
+    }
+    static var defaultWindowsShiftSourceIndex: Int {
+        getInt(from: defaultWindowsShiftSource, in: keyboardModifierSources)
+    }
+    static var defaultWindowsAltSourceIndex: Int {
+        getInt(from: defaultWindowsAltSource, in: keyboardModifierSources)
+    }
+    static var defaultWindowsWinSourceIndex: Int {
+        getInt(from: defaultWindowsWinSource, in: keyboardModifierSources)
+    }
     static let defaultAppArtworkWidth: CGFloat? = nil
     static let defaultAppArtworkHeight: CGFloat? = nil
     static let defaultDimNonHoveredArtwork = true
+
+    static func label(for resolution: CGSize) -> String {
+        if resolution == .zero {
+            return "Custom"
+        }
+
+        if let option = buildResolutionOptions().first(where: { $0.size == resolution }) {
+            return option.label
+        }
+
+        return resolutionLabel(for: resolution)
+    }
+
+    func calibrateBitrate(duration: TimeInterval = 30) {
+        guard !isCalibratingBitrate else {
+            return
+        }
+
+        guard let selectedHost, !selectedHost.address.isEmpty else {
+            bitrateCalibrationStatus = "Select an online host first."
+            return
+        }
+
+        isCalibratingBitrate = true
+        bitrateCalibrationProgress = 0
+        bitrateCalibrationStatus = "Calibrating link to \(selectedHost.name)..."
+
+        let address = Self.currentCalibrationAddress(for: selectedHost) ?? selectedHost.address
+        let resolution = effectiveResolution
+        let fps = effectiveFps
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let startedAt = Date()
+            var probeResults: [TimeInterval?] = []
+            var failures = 0
+            var attempts = 0
+
+            while Date().timeIntervalSince(startedAt) < duration {
+                autoreleasepool {
+                    attempts += 1
+
+                    if let sample = Self.measureHostProbe(address: address) {
+                        probeResults.append(sample)
+                    } else {
+                        probeResults.append(nil)
+                        failures += 1
+                    }
+
+                    let progress = min(1, Date().timeIntervalSince(startedAt) / duration)
+                    DispatchQueue.main.async {
+                        self?.bitrateCalibrationProgress = progress
+                        self?.bitrateCalibrationStatus = "Calibrating link... \(Int(progress * 100))%"
+                    }
+
+                    Thread.sleep(forTimeInterval: 0.35)
+                }
+            }
+
+            let result = Self.recommendBitrateKbps(
+                probeResults: probeResults,
+                failures: failures,
+                attempts: attempts,
+                resolution: resolution,
+                fps: fps
+            )
+
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+
+                if let sliderIndex = result.sliderIndex {
+                    self.bitrateSliderValue = Float(sliderIndex)
+                }
+                self.bitrateCalibrationProgress = 1
+                self.isCalibratingBitrate = false
+                self.bitrateCalibrationStatus = result.status
+            }
+        }
+    }
     
     init() {
         if let hosts = Self.hosts {
@@ -257,6 +396,7 @@ class SettingsModel: ObservableObject {
         selectedPacingOptions = Self.defaultPacingOptions
         
         audioOnPC = Self.defaultAudioOnPC
+        disableAWDLDuringStream = Self.defaultDisableAWDLDuringStream
         volumeLevel = Self.defaultVolumeLevel
         
         selectedMultiControllerMode = Self.defaultMultiControllerMode
@@ -270,6 +410,10 @@ class SettingsModel: ObservableObject {
         selectedMouseDriver = Self.defaultMouseDriver
         
         emulateGuide = Self.defaultEmulateGuide
+        selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
+        selectedWindowsShiftSource = Self.defaultWindowsShiftSource
+        selectedWindowsAltSource = Self.defaultWindowsAltSource
+        selectedWindowsWinSource = Self.defaultWindowsWinSource
         appArtworkWidth = Self.defaultAppArtworkWidth
         appArtworkHeight = Self.defaultAppArtworkHeight
         dimNonHoveredArtwork = Self.defaultDimNonHoveredArtwork
@@ -289,6 +433,7 @@ class SettingsModel: ObservableObject {
         selectedPacingOptions = Self.defaultPacingOptions
         
         audioOnPC = Self.defaultAudioOnPC
+        disableAWDLDuringStream = Self.defaultDisableAWDLDuringStream
         volumeLevel = Self.defaultVolumeLevel
 
         selectedMultiControllerMode = Self.defaultMultiControllerMode
@@ -302,6 +447,10 @@ class SettingsModel: ObservableObject {
         selectedMouseDriver = Self.defaultMouseDriver
         
         emulateGuide = Self.defaultEmulateGuide
+        selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
+        selectedWindowsShiftSource = Self.defaultWindowsShiftSource
+        selectedWindowsAltSource = Self.defaultWindowsAltSource
+        selectedWindowsWinSource = Self.defaultWindowsWinSource
         appArtworkWidth = Self.defaultAppArtworkWidth
         appArtworkHeight = Self.defaultAppArtworkHeight
         dimNonHoveredArtwork = Self.defaultDimNonHoveredArtwork
@@ -345,9 +494,10 @@ class SettingsModel: ObservableObject {
                 
                 selectedVideoCodec = Self.getString(from: settings.codec, in: Self.videoCodecs)
                 hdr = settings.hdr
-                selectedPacingOptions = Self.getString(from: settings.framePacing, in: Self.pacingOptions)
+                selectedPacingOptions = Self.pacingOption(fromStoredValue: settings.framePacing)
                 
                 audioOnPC = settings.audioOnPC
+                disableAWDLDuringStream = settings.disableAWDLDuringStream ?? Self.defaultDisableAWDLDuringStream
                 volumeLevel = settings.volumeLevel ?? SettingsModel.defaultVolumeLevel
                 
                 selectedMultiControllerMode = Self.getString(from: settings.multiController, in: Self.multiControllerModes)
@@ -361,6 +511,10 @@ class SettingsModel: ObservableObject {
                 selectedMouseDriver = Self.getString(from: settings.mouseDriver, in: Self.mouseDrivers)
                 
                 emulateGuide = settings.emulateGuide
+                selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
+                selectedWindowsShiftSource = Self.getString(from: settings.windowsShiftSource ?? Self.defaultWindowsShiftSourceIndex, in: Self.keyboardModifierSources)
+                selectedWindowsAltSource = Self.getString(from: settings.windowsAltSource ?? Self.defaultWindowsAltSourceIndex, in: Self.keyboardModifierSources)
+                selectedWindowsWinSource = Self.getString(from: settings.windowsWinSource ?? Self.defaultWindowsWinSourceIndex, in: Self.keyboardModifierSources)
                 
                 let appArtworkDimensions = loadNillableDimensionSetting(inputDimensions: settings.appArtworkDimensions)
                 appArtworkWidth = appArtworkDimensions != nil ? appArtworkDimensions!.width : nil
@@ -412,10 +566,14 @@ class SettingsModel: ObservableObject {
 
         let bitrate = Int(Self.bitrateSteps[Int(bitrateSliderValue)] * 1000)
         let codec = Self.getInt(from: selectedVideoCodec, in: Self.videoCodecs)
-        let framePacing = Self.getInt(from: selectedPacingOptions, in: Self.pacingOptions)
+        let framePacing = Self.storedValue(forPacingOption: selectedPacingOptions)
         let multiController = Self.getBool(from: selectedMultiControllerMode, in: Self.multiControllerModes)
         let controllerDriver = Self.getInt(from: selectedControllerDriver, in: Self.controllerDrivers)
         let mouseDriver = Self.getInt(from: selectedMouseDriver, in: Self.mouseDrivers)
+        let windowsCtrlSource = Self.getInt(from: selectedWindowsCtrlSource, in: Self.keyboardModifierSources)
+        let windowsShiftSource = Self.getInt(from: selectedWindowsShiftSource, in: Self.keyboardModifierSources)
+        let windowsAltSource = Self.getInt(from: selectedWindowsAltSource, in: Self.keyboardModifierSources)
+        let windowsWinSource = Self.getInt(from: selectedWindowsWinSource, in: Self.keyboardModifierSources)
 
         var appArtworkDimensions: CGSize? = nil
         if let appArtworkWidth, let appArtworkHeight {
@@ -436,6 +594,7 @@ class SettingsModel: ObservableObject {
             hdr: hdr,
             framePacing: framePacing,
             audioOnPC: audioOnPC,
+            disableAWDLDuringStream: disableAWDLDuringStream,
             volumeLevel: volumeLevel,
             multiController: multiController,
             swapABXYButtons: swapButtons,
@@ -445,6 +604,10 @@ class SettingsModel: ObservableObject {
             controllerDriver: controllerDriver,
             mouseDriver: mouseDriver,
             emulateGuide: emulateGuide,
+            windowsCtrlSource: windowsCtrlSource,
+            windowsShiftSource: windowsShiftSource,
+            windowsAltSource: windowsAltSource,
+            windowsWinSource: windowsWinSource,
             appArtworkDimensions: appArtworkDimensions,
             dimNonHoveredArtwork: dimNonHoveredArtwork
         )
@@ -477,6 +640,36 @@ class SettingsModel: ObservableObject {
         return settingString
     }
 
+    static func storedValue(forPacingOption pacingOption: String) -> Int {
+        switch pacingOption {
+        case pacingLowestLatency:
+            return 0
+        case pacingSmoothest:
+            return 1
+        case pacingAuto:
+            return 2
+        case pacingBalanced:
+            return 3
+        default:
+            return 2
+        }
+    }
+
+    static func pacingOption(fromStoredValue storedValue: Int) -> String {
+        switch storedValue {
+        case 0:
+            return pacingLowestLatency
+        case 1:
+            return pacingSmoothest
+        case 2:
+            return pacingAuto
+        case 3:
+            return pacingBalanced
+        default:
+            return defaultPacingOptions
+        }
+    }
+
     static func getBool(from settingInt: Int, in settingsArray: [String]) -> Bool {
         guard settingsArray.count == 2 || settingInt <= 1 else {
             return false
@@ -506,5 +699,298 @@ class SettingsModel: ObservableObject {
         }
         
         return settingString
+    }
+
+    private var effectiveResolution: CGSize {
+        if selectedResolution == .zero {
+            return CGSize(
+                width: customResWidth ?? Self.defaultResolution.width,
+                height: customResHeight ?? Self.defaultResolution.height
+            )
+        }
+
+        return selectedResolution
+    }
+
+    private var effectiveFps: Int {
+        if selectedFps == .zero {
+            return Int(customFps ?? CGFloat(Self.defaultFps))
+        }
+
+        return selectedFps
+    }
+
+    private struct BitrateCalibrationResult {
+        let sliderIndex: Int?
+        let status: String
+    }
+
+    private static func currentCalibrationAddress(for host: Host) -> String? {
+        guard let tempHosts = DataManager().getHosts() as? [TemporaryHost],
+              let tempHost = tempHosts.first(where: { $0.uuid == host.id }) else {
+            return nil
+        }
+
+        return calibrationAddress(for: tempHost)
+    }
+
+    private static func calibrationAddress(for host: TemporaryHost) -> String {
+        if let address = host.address, Utils.port(fromAddressString: address) != nil {
+            return address
+        }
+
+        if let activeAddress = host.activeAddress, Utils.port(fromAddressString: activeAddress) != nil {
+            return activeAddress
+        }
+
+        return host.activeAddress ?? host.localAddress ?? host.address ?? host.externalAddress ?? host.ipv6Address ?? ""
+    }
+
+    private static func measureHostProbe(address: String) -> TimeInterval? {
+        let host = Utils.host(fromAddressString: address) ?? address
+        let explicitPort = Utils.port(fromAddressString: address).flatMap(UInt16.init)
+        let ports: [UInt16]
+        if let explicitPort {
+            ports = [explicitPort]
+        } else {
+            ports = [47989, 47984, 48010]
+        }
+
+        for port in ports {
+            if let latency = measureTcpConnect(host: host, port: port) {
+                return latency
+            }
+        }
+
+        return nil
+    }
+
+    private static func measureTcpConnect(host: String, port: UInt16) -> TimeInterval? {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            return nil
+        }
+
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+        let semaphore = DispatchSemaphore(value: 0)
+        let startTime = Date()
+        var measuredLatency: TimeInterval?
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                measuredLatency = Date().timeIntervalSince(startTime)
+                connection.cancel()
+                semaphore.signal()
+            case .failed, .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+
+        connection.start(queue: DispatchQueue.global(qos: .userInitiated))
+
+        if semaphore.wait(timeout: .now() + 3) == .timedOut {
+            connection.cancel()
+        }
+
+        return measuredLatency
+    }
+
+    private static func recommendBitrateKbps(probeResults: [TimeInterval?], failures: Int, attempts: Int, resolution: CGSize, fps: Int) -> BitrateCalibrationResult {
+        let safeAttempts = max(attempts, 1)
+        let lossRate = Double(failures) / Double(safeAttempts)
+        let samples = probeResults.compactMap { $0 }
+        guard !samples.isEmpty else {
+            return BitrateCalibrationResult(
+                sliderIndex: nil,
+                status: "Calibration failed: the selected host did not accept calibration probes."
+            )
+        }
+
+        let sortedSamples = samples.sorted()
+        let medianMs = percentile(sortedSamples, percentile: 0.50) * 1000
+        let p95Ms = percentile(sortedSamples, percentile: 0.95) * 1000
+        let jitterMs = averageDelta(samples) * 1000
+
+        let profileMaxMbps = maxBitrateForStream(resolution: resolution, fps: fps)
+        let gccEstimateMbps = googleCongestionControlEstimateMbps(
+            probeResults: probeResults,
+            profileMaxMbps: profileMaxMbps
+        )
+        let recommendedMbps = max(1, min(150, gccEstimateMbps))
+        let sliderIndex = sliderIndexForBitrateMbps(recommendedMbps)
+        let sliderMbps = Int(bitrateSteps[sliderIndex])
+        let status = String(
+            format: "GCC calibrated to %d Mbps. Median %.0f ms, p95 %.0f ms, jitter %.0f ms, loss %.0f%%.",
+            sliderMbps,
+            medianMs,
+            p95Ms,
+            jitterMs,
+            lossRate * 100
+        )
+
+        return BitrateCalibrationResult(sliderIndex: sliderIndex, status: status)
+    }
+
+    private static func googleCongestionControlEstimateMbps(probeResults: [TimeInterval?], profileMaxMbps: Double) -> Double {
+        let successfulSamples = probeResults.compactMap { $0 }
+        guard !successfulSamples.isEmpty else {
+            return 1
+        }
+
+        let windowSize = 4
+        let initialMbps = min(profileMaxMbps, max(6, profileMaxMbps * 0.50))
+        var estimatedMbps = initialMbps
+        var baselineDelay = percentile(successfulSamples.sorted(), percentile: 0.20)
+
+        for windowStart in stride(from: 0, to: probeResults.count, by: windowSize) {
+            let windowEnd = min(windowStart + windowSize, probeResults.count)
+            let window = Array(probeResults[windowStart..<windowEnd])
+            let windowAttempts = max(window.count, 1)
+            let windowSamples = window.compactMap { $0 }
+            let windowFailures = windowAttempts - windowSamples.count
+            let windowLossRate = Double(windowFailures) / Double(windowAttempts)
+
+            guard !windowSamples.isEmpty else {
+                estimatedMbps *= 0.85
+                continue
+            }
+
+            let sortedWindowSamples = windowSamples.sorted()
+            let windowMedian = percentile(sortedWindowSamples, percentile: 0.50)
+            let windowP95 = percentile(sortedWindowSamples, percentile: 0.95)
+            let delayOveruseThreshold = max(0.010, baselineDelay * 0.50)
+            let p95OveruseThreshold = max(0.020, baselineDelay)
+            let isDelayOveruse = windowMedian > baselineDelay + delayOveruseThreshold ||
+                windowP95 > baselineDelay + p95OveruseThreshold
+
+            if windowLossRate > 0.10 {
+                estimatedMbps *= max(0.50, 1 - (0.5 * windowLossRate))
+            } else if isDelayOveruse {
+                estimatedMbps *= 0.85
+            } else if windowLossRate < 0.02 {
+                estimatedMbps *= 1.05
+                baselineDelay = min(baselineDelay, windowMedian)
+            }
+
+            estimatedMbps = max(1, min(profileMaxMbps, estimatedMbps))
+        }
+
+        return estimatedMbps
+    }
+
+    private static func maxBitrateForStream(resolution: CGSize, fps: Int) -> Double {
+        let width = max(Double(resolution.width), 1)
+        let height = max(Double(resolution.height), 1)
+        let frames = max(Double(fps), 1)
+        let relativePixelRate = (width * height * frames) / (1920 * 1080 * 60)
+        let recommended = 40 * relativePixelRate
+
+        return max(6, min(150, recommended))
+    }
+
+    private static func sliderIndexForBitrateMbps(_ bitrateMbps: Double) -> Int {
+        var selectedIndex = 0
+
+        for (index, step) in bitrateSteps.enumerated() {
+            if Double(step) <= bitrateMbps {
+                selectedIndex = index
+            } else {
+                break
+            }
+        }
+
+        return selectedIndex
+    }
+
+    private static func percentile(_ samples: [TimeInterval], percentile: Double) -> TimeInterval {
+        guard !samples.isEmpty else {
+            return 0
+        }
+
+        let index = min(samples.count - 1, max(0, Int(Double(samples.count - 1) * percentile)))
+        return samples[index]
+    }
+
+    private static func averageDelta(_ samples: [TimeInterval]) -> TimeInterval {
+        guard samples.count > 1 else {
+            return 0
+        }
+
+        var totalDelta: TimeInterval = 0
+        for index in 1..<samples.count {
+            totalDelta += abs(samples[index] - samples[index - 1])
+        }
+
+        return totalDelta / Double(samples.count - 1)
+    }
+
+    private struct ResolutionOption {
+        let size: CGSize
+        let label: String
+    }
+
+    private static func buildResolutionOptions() -> [ResolutionOption] {
+        var options: [ResolutionOption] = []
+        var seenSizes = Set<String>()
+
+        func append(_ size: CGSize, label: String? = nil) {
+            let normalizedSize = CGSize(width: size.width.rounded(), height: size.height.rounded())
+            guard normalizedSize.width > 0, normalizedSize.height > 0 else {
+                return
+            }
+
+            let key = "\(Int(normalizedSize.width))x\(Int(normalizedSize.height))"
+            guard !seenSizes.contains(key) else {
+                return
+            }
+
+            seenSizes.insert(key)
+            options.append(ResolutionOption(size: normalizedSize, label: label ?? resolutionLabel(for: normalizedSize)))
+        }
+
+        append(CGSize(width: 1280, height: 720))
+        append(CGSize(width: 1920, height: 1080))
+        append(CGSize(width: 1920, height: 1200))
+        append(CGSize(width: 2560, height: 1440))
+        append(CGSize(width: 2560, height: 1600))
+        append(CGSize(width: 2880, height: 1800))
+        append(CGSize(width: 3840, height: 2160))
+
+        if let screen = NSScreen.main {
+            let scale = screen.backingScaleFactor
+            let nativeSize = CGSize(width: screen.frame.width * scale, height: screen.frame.height * scale)
+            append(nativeSize, label: "Native Display")
+
+            if #available(macOS 12.0, *) {
+                let safeAreaInsets = screen.safeAreaInsets
+                let safeWidth = (screen.frame.width - safeAreaInsets.left - safeAreaInsets.right) * scale
+                let safeHeight = (screen.frame.height - safeAreaInsets.top - safeAreaInsets.bottom) * scale
+                let safeSize = CGSize(width: safeWidth, height: safeHeight)
+
+                if safeSize != nativeSize {
+                    append(safeSize, label: "Native Display (Notch-Free)")
+                }
+            }
+        }
+
+        options.append(ResolutionOption(size: .zero, label: "Custom"))
+        return options
+    }
+
+    private static func resolutionLabel(for resolution: CGSize) -> String {
+        let width = Int(resolution.width)
+        let height = Int(resolution.height)
+
+        if width == 3840 && height == 2160 {
+            return "4K"
+        }
+
+        if width * 9 == height * 16 {
+            return "\(height)p"
+        }
+
+        return "\(width) x \(height)"
     }
 }

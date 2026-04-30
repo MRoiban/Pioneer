@@ -120,6 +120,7 @@ const NSEventModifierFlags modifierFlagsMask = NSEventModifierFlagShift | NSEven
     CGEventRef cgEvent = CGEventCreateKeyboardEvent(NULL, keyCode, true);
     CGEventSetFlags(cgEvent, 0);
     NSEvent *event = [NSEvent eventWithCGEvent:cgEvent];
+    CFRelease(cgEvent);
     [self keyDown:event];
 }
 

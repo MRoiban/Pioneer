@@ -27,6 +27,7 @@
     char _hostString[256];
     char _appVersionString[32];
     char _gfeVersionString[32];
+    char _rtspSessionUrlString[256];
 }
 
 static NSLock* initLock;
@@ -367,8 +368,9 @@ void ClConnectionStatusUpdate(int status)
     hostAddress = config.host;
     [self updateVolume];
     
+    NSString* connectionHost = [Utils hostFromAddressString:config.host];
     strncpy(_hostString,
-            [config.host cStringUsingEncoding:NSUTF8StringEncoding],
+            [connectionHost cStringUsingEncoding:NSUTF8StringEncoding],
             sizeof(_hostString));
     strncpy(_appVersionString,
             [config.appVersion cStringUsingEncoding:NSUTF8StringEncoding],
@@ -378,6 +380,11 @@ void ClConnectionStatusUpdate(int status)
                 [config.gfeVersion cStringUsingEncoding:NSUTF8StringEncoding],
                 sizeof(_gfeVersionString));
     }
+    if (config.rtspSessionUrl != nil) {
+        strncpy(_rtspSessionUrlString,
+                [config.rtspSessionUrl cStringUsingEncoding:NSUTF8StringEncoding],
+                sizeof(_rtspSessionUrlString));
+    }
 
     LiInitializeServerInformation(&_serverInfo);
     _serverInfo.address = _hostString;
@@ -385,8 +392,12 @@ void ClConnectionStatusUpdate(int status)
     if (config.gfeVersion != nil) {
         _serverInfo.serverInfoGfeVersion = _gfeVersionString;
     }
+    if (config.rtspSessionUrl != nil) {
+        _serverInfo.rtspSessionUrl = _rtspSessionUrlString;
+    }
 
     renderer = myRenderer;
+    [renderer setFramePacingMode:config.framePacing];
     _callbacks = callbacks;
 
     LiInitializeStreamConfiguration(&_streamConfig);

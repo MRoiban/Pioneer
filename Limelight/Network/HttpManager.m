@@ -59,16 +59,19 @@ static const NSString* HTTPS_PORT = @"47984";
     _requestLock = dispatch_semaphore_create(0);
     _respData = [[NSMutableData alloc] init];
     
-    // If this is an IPv6 literal, we must properly enclose it in brackets
-    NSString* urlSafeHost;
-    if ([host containsString:@":"]) {
-        urlSafeHost = [NSString stringWithFormat:@"[%@]", host];
+    NSString* urlSafeHost = [Utils urlSafeHostFromAddressString:host];
+    NSString* explicitPort = [Utils portFromAddressString:host];
+    NSString* httpPort = explicitPort ?: (NSString*)HTTP_PORT;
+    NSString* httpsPort;
+    if (explicitPort != nil) {
+        NSInteger httpPortValue = [explicitPort integerValue];
+        httpsPort = [NSString stringWithFormat:@"%ld", (long)(httpPortValue - ([HTTP_PORT integerValue] - [HTTPS_PORT integerValue]))];
     } else {
-        urlSafeHost = host;
+        httpsPort = (NSString*)HTTPS_PORT;
     }
     
-    _baseHTTPURL = [NSString stringWithFormat:@"http://%@:%@", urlSafeHost, HTTP_PORT];
-    _baseHTTPSURL = [NSString stringWithFormat:@"https://%@:%@", urlSafeHost, HTTPS_PORT];
+    _baseHTTPURL = [NSString stringWithFormat:@"http://%@:%@", urlSafeHost, httpPort];
+    _baseHTTPSURL = [NSString stringWithFormat:@"https://%@:%@", urlSafeHost, httpsPort];
 
     return self;
 }

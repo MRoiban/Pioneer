@@ -216,11 +216,7 @@ struct StreamView: View {
                     FormCell(title: "Resolution", contentWidth: 100, content: {
                         Picker("", selection: $settingsModel.selectedResolution) {
                             ForEach(SettingsModel.resolutions, id: \.self) { resolution in
-                                if resolution == .zero {
-                                    Text("Custom")
-                                } else {
-                                    Text(verbatim: resolution.height == 2160 ? "4K" : "\(Int(resolution.height))p")
-                                }
+                                Text(verbatim: SettingsModel.label(for: resolution))
                             }
                         }
                     })
@@ -268,7 +264,42 @@ struct StreamView: View {
                         Text("\(bitrate) Mbps")
                             .availableMonospacedDigit()
                         Slider(value: $settingsModel.bitrateSliderValue, in: 0...Float(SettingsModel.bitrateSteps.count - 1), step: 1)
+
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                settingsModel.calibrateBitrate()
+                            }, label: {
+                                if settingsModel.isCalibratingBitrate {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "speedometer")
+                                }
+
+                                Text(settingsModel.isCalibratingBitrate ? "Calibrating..." : "Calibrate")
+                            })
+                            .disabled(settingsModel.isCalibratingBitrate)
+
+                            if settingsModel.isCalibratingBitrate {
+                                ProgressView(value: settingsModel.bitrateCalibrationProgress)
+                                    .frame(maxWidth: 120)
+                            }
+                        }
+
+                        if let bitrateCalibrationStatus = settingsModel.bitrateCalibrationStatus {
+                            Text(bitrateCalibrationStatus)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                }
+
+                Spacer()
+                    .frame(height: 32)
+
+                FormSection(title: "Network") {
+                    ToggleCell(title: "Disable AWDL During Stream", boolBinding: $settingsModel.disableAWDLDuringStream)
                 }
             }
             .padding()
@@ -318,10 +349,10 @@ struct VideoAndAudioView: View {
                     
                     Divider()
                     
-                    FormCell(title: "Frame Pacing", contentWidth: 155, content: {
+                    FormCell(title: "Frame Pacing", contentWidth: 285, content: {
                         Picker("", selection: $settingsModel.selectedPacingOptions) {
                             ForEach(SettingsModel.pacingOptions, id: \.self) { pacingOption in
-                                Text(pacingOption)
+                                Text(framePacingLabel(for: pacingOption))
                             }
                         }
                     })
@@ -360,6 +391,21 @@ struct VideoAndAudioView: View {
             .padding()
         }
     }
+
+    private func framePacingLabel(for pacingOption: String) -> String {
+        switch pacingOption {
+        case SettingsModel.pacingAuto:
+            return "Auto - chooses based on FPS and display"
+        case SettingsModel.pacingLowestLatency:
+            return "Lowest Latency - recommended for 30 FPS"
+        case SettingsModel.pacingBalanced:
+            return "Balanced - recommended for 60/120 FPS"
+        case SettingsModel.pacingSmoothest:
+            return "Smoothest - video-first, may add latency"
+        default:
+            return pacingOption
+        }
+    }
 }
 
 struct InputView: View {
@@ -395,6 +441,25 @@ struct InputView: View {
                 
                 Spacer()
                     .frame(height: 32)
+
+                FormSection(title: "Keyboard") {
+                    ModifierSourcePickerCell(title: "Windows Ctrl", selection: $settingsModel.selectedWindowsCtrlSource)
+
+                    Divider()
+
+                    ModifierSourcePickerCell(title: "Windows Shift", selection: $settingsModel.selectedWindowsShiftSource)
+
+                    Divider()
+
+                    ModifierSourcePickerCell(title: "Windows Alt", selection: $settingsModel.selectedWindowsAltSource)
+
+                    Divider()
+
+                    ModifierSourcePickerCell(title: "Windows Win", selection: $settingsModel.selectedWindowsWinSource)
+                }
+
+                Spacer()
+                    .frame(height: 32)
                 
                 FormSection(title: "Drivers") {
                     FormCell(title: "Controller Driver", contentWidth: 88, content: {
@@ -418,6 +483,21 @@ struct InputView: View {
             }
             .padding()
         }
+    }
+}
+
+struct ModifierSourcePickerCell: View {
+    let title: String
+    @Binding var selection: String
+
+    var body: some View {
+        FormCell(title: title, contentWidth: 105, content: {
+            Picker("", selection: $selection) {
+                ForEach(SettingsModel.keyboardModifierSources, id: \.self) { source in
+                    Text(source)
+                }
+            }
+        })
     }
 }
 

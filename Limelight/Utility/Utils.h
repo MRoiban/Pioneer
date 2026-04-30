@@ -25,6 +25,10 @@ FOUNDATION_EXPORT NSString *const deviceName;
 + (NSData*) randomBytes:(NSInteger)length;
 + (NSString*) bytesToHex:(NSData*)data;
 + (NSData*) hexToBytes:(NSString*) hex;
++ (NSString*) hostFromAddressString:(NSString*)address;
++ (NSString*) portFromAddressString:(NSString*)address;
++ (NSString*) urlSafeHostFromAddressString:(NSString*)address;
++ (BOOL) addressStringHasExplicitPort:(NSString*)address;
 #if TARGET_OS_IPHONE
 + (void) addHelpOptionToDialog:(UIAlertController*)dialog;
 #endif

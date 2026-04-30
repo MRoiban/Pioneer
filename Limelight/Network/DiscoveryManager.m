@@ -89,6 +89,7 @@
     struct addrinfo hints;
     struct addrinfo* result;
     int err;
+    NSString* host = [Utils hostFromAddressString:address];
     
     // We're explicitly using AF_INET here because we don't want to
     // ever receive a synthesized IPv6 address here, even on NAT64.
@@ -96,7 +97,7 @@
     // tell whether they are local or not.
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
-    err = getaddrinfo([address UTF8String], NULL, &hints, &result);
+    err = getaddrinfo([host UTF8String], NULL, &hints, &result);
     if (err != 0 || result == NULL) {
         Log(LOG_W, @"getaddrinfo(%@) failed: %d", address, err);
         return NO;
@@ -127,6 +128,7 @@
 }
 
 - (void) discoverHost:(NSString *)hostAddress withCallback:(void (^)(TemporaryHost *, NSString*))callback {
+    hostAddress = [hostAddress trim];
     BOOL prohibitedAddress = [DiscoveryManager isProhibitedAddress:hostAddress];
     NSString* prohibitedAddressMessage = [NSString stringWithFormat: @"Moonlight only supports adding PCs on your local network on %s.",
     #if TARGET_OS_TV
@@ -179,7 +181,7 @@
                 callback(nil, prohibitedAddressMessage);
                 return;
             }
-            else if ([DiscoveryManager isAddressLAN:inet_addr([hostAddress UTF8String])]) {
+            else if ([DiscoveryManager isAddressLAN:inet_addr([[Utils hostFromAddressString:hostAddress] UTF8String])]) {
                 // Don't send a STUN request if we're connected to a VPN. We'll likely get the VPN
                 // gateway's external address rather than the external address of the LAN.
                 if (![Utils isActiveNetworkVPN]) {

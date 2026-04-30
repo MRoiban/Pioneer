@@ -142,6 +142,7 @@
 				Stream/StreamConfiguration.m,
 				Stream/StreamManager.m,
 				Stream/VideoDecoderRenderer.m,
+				Utility/AWDLDisabler.m,
 				Utility/Logger.m,
 				Utility/Utils.m,
 				Version.xcconfig,

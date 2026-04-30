@@ -18,6 +18,7 @@ struct Settings: Encodable, Decodable {
     let hdr: Bool
     let framePacing: Int
     let audioOnPC: Bool
+    let disableAWDLDuringStream: Bool?
     let volumeLevel: CGFloat?
     let multiController: Bool
     let swapABXYButtons: Bool
@@ -29,6 +30,10 @@ struct Settings: Encodable, Decodable {
     let mouseDriver: Int
     
     let emulateGuide: Bool
+    let windowsCtrlSource: Int?
+    let windowsShiftSource: Int?
+    let windowsAltSource: Int?
+    let windowsWinSource: Int?
     let appArtworkDimensions: CGSize?
     let dimNonHoveredArtwork: Bool
     
@@ -63,6 +68,7 @@ class SettingsClass: NSObject {
                     "hdr": settings.hdr,
                     "framePacing": settings.framePacing,
                     "audioOnPC": settings.audioOnPC,
+                    "disableAWDLDuringStream": settings.disableAWDLDuringStream ?? SettingsModel.defaultDisableAWDLDuringStream,
                     "volumeLevel": settings.volumeLevel,
                     "multiController": settings.multiController,
                     "swapABXYButtons": settings.swapABXYButtons,
@@ -72,6 +78,10 @@ class SettingsClass: NSObject {
                     "controllerDriver": settings.controllerDriver,
                     "mouseDriver": settings.mouseDriver,
                     "emulateGuide": settings.emulateGuide,
+                    "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
+                    "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
+                    "windowsAltSource": settings.windowsAltSource ?? SettingsModel.defaultWindowsAltSourceIndex,
+                    "windowsWinSource": settings.windowsWinSource ?? SettingsModel.defaultWindowsWinSourceIndex,
                     "appArtworkDimensions": settings.appArtworkDimensions,
                     "dimNonHoveredArtwork": settings.dimNonHoveredArtwork
                 ]
@@ -93,9 +103,6 @@ class SettingsClass: NSObject {
             let dataBitrate = settings.bitrate
             let dataCodec = SettingsModel.getBool(from: settings.codec, in: SettingsModel.videoCodecs)
             
-            // TODO: Add this back when VideoDecoderRenderer gets merged, with frame pacing setting check
-//            let dataFramePacing = SettingsModel.getBool(from: settings.framePacing, in: SettingsModel.pacingOptions)
-            
             dataMan.saveSettings(
                 withBitrate: dataBitrate,
                 framerate: dataFps,
@@ -115,12 +122,14 @@ class SettingsClass: NSObject {
     
     @objc static func getHostUUID(from address: String) -> String? {
         if let hosts = DataManager().getHosts() as? [TemporaryHost] {
+            let normalizedAddress = Utils.host(fromAddressString: address)
             if let matchingHost = hosts.first(where: { host in
-                if let potentialAddress = host.localAddress {
-                    return potentialAddress == address
-                } else {
-                    return false
+                for potentialAddress in [host.address, host.localAddress, host.externalAddress, host.ipv6Address] {
+                    if let potentialAddress, Utils.host(fromAddressString: potentialAddress) == normalizedAddress {
+                        return true
+                    }
                 }
+                return false
             }) {
                 return matchingHost.uuid
             }
@@ -143,6 +152,14 @@ class SettingsClass: NSObject {
         }
         
         return SettingsModel.defaultRumble
+    }
+
+    @objc static func framePacing(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.framePacing
+        }
+
+        return SettingsModel.storedValue(forPacingOption: SettingsModel.defaultPacingOptions)
     }
     
     @objc static func controllerDriver(for key: String) -> Int {
@@ -185,5 +202,45 @@ class SettingsClass: NSObject {
         }
         
         return SettingsModel.defaultVolumeLevel
+    }
+
+    @objc static func disableAWDLDuringStream(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.disableAWDLDuringStream ?? SettingsModel.defaultDisableAWDLDuringStream
+        }
+
+        return SettingsModel.defaultDisableAWDLDuringStream
+    }
+
+    @objc static func windowsCtrlSource(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex
+        }
+
+        return SettingsModel.defaultWindowsCtrlSourceIndex
+    }
+
+    @objc static func windowsShiftSource(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex
+        }
+
+        return SettingsModel.defaultWindowsShiftSourceIndex
+    }
+
+    @objc static func windowsAltSource(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.windowsAltSource ?? SettingsModel.defaultWindowsAltSourceIndex
+        }
+
+        return SettingsModel.defaultWindowsAltSourceIndex
+    }
+
+    @objc static func windowsWinSource(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.windowsWinSource ?? SettingsModel.defaultWindowsWinSourceIndex
+        }
+
+        return SettingsModel.defaultWindowsWinSourceIndex
     }
 }

@@ -24,7 +24,9 @@
 }
 
 - (void)dealloc {
-    CGColorRelease(self.backgroundCGColor);
+    if (_backgroundCGColor != NULL) {
+        CGColorRelease(_backgroundCGColor);
+    }
 }
 
 - (void)setClear:(BOOL)clear {
@@ -33,13 +35,15 @@
 }
 
 - (void)updateLayer {
-    CGColorRelease(self.backgroundCGColor);
-    self.backgroundCGColor = CGColorRetain([NSColor colorNamed:self.backgroundColorName].CGColor);
+    if (_backgroundCGColor != NULL) {
+        CGColorRelease(_backgroundCGColor);
+    }
+    _backgroundCGColor = CGColorRetain([NSColor colorNamed:self.backgroundColorName].CGColor);
     [self updateBackgroundColor];
 }
 
 - (void)updateBackgroundColor {
-    self.layer.backgroundColor = self.clear ? [NSColor clearColor].CGColor : self.backgroundCGColor;
+    self.layer.backgroundColor = self.clear ? [NSColor clearColor].CGColor : _backgroundCGColor;
 }
 
 @end

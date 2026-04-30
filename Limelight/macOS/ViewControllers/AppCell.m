@@ -21,6 +21,7 @@
 @property (nonatomic) BOOL hovered;
 @property (nonatomic) BOOL previousHovered;
 @property (nonatomic) BOOL previousSelected;
+- (CGMutablePathRef)CGPathFromPath:(NSBezierPath *)path CF_RETURNS_RETAINED;
 @end
 
 @implementation AppCell
@@ -228,7 +229,9 @@
 - (void)updateShadowPath {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSBezierPath *shadowPath = [NSBezierPath bezierPathWithRoundedRect:self.appCoverArt.bounds xRadius:APP_CELL_CORNER_RADIUS yRadius:APP_CELL_CORNER_RADIUS];
-        self.appCoverArt.superview.layer.shadowPath = [self CGPathFromPath:shadowPath];
+        CGPathRef cgPath = [self CGPathFromPath:shadowPath];
+        self.appCoverArt.superview.layer.shadowPath = cgPath;
+        CGPathRelease(cgPath);
     });
 }
 

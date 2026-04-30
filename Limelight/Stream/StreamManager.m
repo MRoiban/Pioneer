@@ -25,6 +25,9 @@
     Connection* _connection;
 }
 
+static const NSInteger GAMESTREAM_HTTP_PORT = 47989;
+static const NSInteger GAMESTREAM_RTSP_PORT = 48010;
+
 - (id) initWithConfig:(StreamConfiguration*)config renderView:(OSView*)view connectionCallbacks:(id<ConnectionCallbacks>)callbacks {
     self = [super init];
     _config = config;
@@ -110,6 +113,7 @@
     HttpResponse* launchResp = [[HttpResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:launchResp withUrlRequest:[hMan newLaunchRequest:_config]]];
     NSString *gameSession = [launchResp getStringTag:@"gamesession"];
+    [self updateRtspSessionUrlFromResponse:launchResp];
     if (![launchResp isStatusOk]) {
         [_callbacks launchFailed:launchResp.statusMessage];
         Log(LOG_E, @"Failed Launch Response: %@", launchResp.statusMessage);
@@ -127,6 +131,7 @@
     HttpResponse* resumeResp = [[HttpResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:resumeResp withUrlRequest:[hMan newResumeRequest:_config]]];
     NSString* resume = [resumeResp getStringTag:@"resume"];
+    [self updateRtspSessionUrlFromResponse:resumeResp];
     if (![resumeResp isStatusOk]) {
         [_callbacks launchFailed:resumeResp.statusMessage];
         Log(LOG_E, @"Failed Resume Response: %@", resumeResp.statusMessage);
@@ -138,6 +143,27 @@
     }
     
     return TRUE;
+}
+
+- (void)updateRtspSessionUrlFromResponse:(HttpResponse*)response {
+    NSString* sessionUrl = [response getStringTag:@"sessionUrl0"];
+    NSString* explicitPort = [Utils portFromAddressString:_config.host];
+    
+    if (explicitPort != nil) {
+        NSInteger rtspPort = [explicitPort integerValue] + (GAMESTREAM_RTSP_PORT - GAMESTREAM_HTTP_PORT);
+        if (rtspPort > 0 && rtspPort <= 65535) {
+            _config.rtspSessionUrl = [NSString stringWithFormat:@"rtsp://%@:%ld",
+                                      [Utils urlSafeHostFromAddressString:_config.host],
+                                      (long)rtspPort];
+            Log(LOG_I, @"Using RTSP session URL derived from explicit host port: %@", _config.rtspSessionUrl);
+            return;
+        }
+    }
+    
+    if (sessionUrl.length != 0) {
+        _config.rtspSessionUrl = sessionUrl;
+        Log(LOG_I, @"Using RTSP session URL from host: %@", _config.rtspSessionUrl);
+    }
 }
 
 @end
