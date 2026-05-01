@@ -11,9 +11,11 @@
 
 #import "Moonlight-Swift.h"
 
-#import <AudioUnit/AudioUnit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <VideoToolbox/VideoToolbox.h>
+
+#define SDL_MAIN_HANDLED
+#import <SDL2/SDL.h>
 
 #include <stdatomic.h>
 
@@ -38,29 +40,21 @@ static id<ConnectionCallbacks> _callbacks;
 
 #define OUTPUT_BUS 0
 
-// My iPod touch 5th Generation seems to really require 80 ms
-// of buffering to deliver glitch-free playback :(
-// FIXME: Maybe we can use a smaller buffer on more modern iOS versions?
-#define CIRCULAR_BUFFER_DURATION 80
-
-static int audioBufferEntries;
-static int audioBufferWriteIndex;
-static int audioBufferReadIndex;
-static int audioBufferStride;
-static int audioSamplesPerFrame;
-static int audioMaxSamplesPerFrame;
-static int* audioBufferFrameCounts;
-static short* audioCircularBuffer;
-
 static int channelCount;
 static float audioVolumeMultiplier = 1.0f;
 static NSString *hostAddress;
+static BOOL audioDiagnosticsEnabled;
+static FILE* decodedPcmDumpFile;
+static unsigned long long decodedPcmDumpFramesRemaining;
 
-#define AUDIO_QUEUE_BUFFERS 4
-#define MAX_OPUS_FRAME_DURATION_MS 120
+#define DECODED_PCM_DUMP_SECONDS 30
+#define SDL_AUDIO_THROTTLE_FRAMES 20
+#define AUDIO_BACKLOG_DROP_THRESHOLD_MS 100
 
-static AudioQueueRef audioQueue;
-static AudioQueueBufferRef audioBuffers[AUDIO_QUEUE_BUFFERS];
+static SDL_AudioDeviceID audioDevice;
+static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
+static void* audioBuffer;
+static int audioFrameSize;
 static VideoDecoderRenderer* renderer;
 
 static atomic_ullong audioDecodedPackets;
@@ -69,19 +63,35 @@ static atomic_ullong audioRingDrops;
 static atomic_ullong audioOutputUnderruns;
 static atomic_ullong audioInvalidFrameCounts;
 static atomic_ullong audioClippedSamples;
+static atomic_ullong audioThrottleSleeps;
+static atomic_int audioMaxQueuedFrames;
+static atomic_int audioMaxPendingMs;
+
+void ArCleanup(void);
 
 static int AudioQueuedBuffers(void)
 {
-    int queued = audioBufferWriteIndex - audioBufferReadIndex;
-    if (queued < 0) {
-        queued += audioBufferEntries;
+    if (audioDevice == 0 || audioFrameSize == 0) {
+        return 0;
     }
 
-    return queued;
+    return (int)(SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize);
+}
+
+static void UpdateAtomicMaxInt(atomic_int* target, int value)
+{
+    int current = atomic_load_explicit(target, memory_order_relaxed);
+    while (value > current &&
+           !atomic_compare_exchange_weak_explicit(target, &current, value, memory_order_relaxed, memory_order_relaxed)) {
+    }
 }
 
 static void LogAudioDiagnosticsIfNeeded(void)
 {
+    if (!audioDiagnosticsEnabled) {
+        return;
+    }
+
     static CFAbsoluteTime lastLogTime;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
 
@@ -96,9 +106,12 @@ static void LogAudioDiagnosticsIfNeeded(void)
     unsigned long long outputUnderruns = atomic_exchange_explicit(&audioOutputUnderruns, 0, memory_order_relaxed);
     unsigned long long invalidFrames = atomic_exchange_explicit(&audioInvalidFrameCounts, 0, memory_order_relaxed);
     unsigned long long clipped = atomic_exchange_explicit(&audioClippedSamples, 0, memory_order_relaxed);
+    unsigned long long throttleSleeps = atomic_exchange_explicit(&audioThrottleSleeps, 0, memory_order_relaxed);
+    int maxQueued = atomic_exchange_explicit(&audioMaxQueuedFrames, 0, memory_order_relaxed);
+    int maxPending = atomic_exchange_explicit(&audioMaxPendingMs, 0, memory_order_relaxed);
     int queued = AudioQueuedBuffers();
 
-    Log(LOG_I, @"Audio client diagnostics: decoded=%llu decodeErrors=%llu ringDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d entries=%d volume=%.2f",
+    Log(LOG_I, @"Audio client diagnostics: decoded=%llu decodeErrors=%llu backlogDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d pendingMs=%d maxQueued=%d maxPendingMs=%d throttleSleeps=%llu volume=%.2f",
         decoded,
         decodeErrors,
         ringDrops,
@@ -106,13 +119,16 @@ static void LogAudioDiagnosticsIfNeeded(void)
         invalidFrames,
         clipped,
         queued,
-        audioBufferEntries,
+        LiGetPendingAudioDuration(),
+        maxQueued,
+        maxPending,
+        throttleSleeps,
         audioVolumeMultiplier);
 
     FILE *file = fopen("/tmp/moonlight_audio_diagnostics.log", "a");
     if (file != NULL) {
         fprintf(file,
-                "%.3f Audio client diagnostics: decoded=%llu decodeErrors=%llu ringDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d entries=%d volume=%.2f\n",
+                "%.3f Audio client diagnostics: decoded=%llu decodeErrors=%llu backlogDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d pendingMs=%d maxQueued=%d maxPendingMs=%d throttleSleeps=%llu volume=%.2f\n",
                 [[NSDate date] timeIntervalSince1970],
                 decoded,
                 decodeErrors,
@@ -121,7 +137,10 @@ static void LogAudioDiagnosticsIfNeeded(void)
                 invalidFrames,
                 clipped,
                 queued,
-                audioBufferEntries,
+                LiGetPendingAudioDuration(),
+                maxQueued,
+                maxPending,
+                throttleSleeps,
                 audioVolumeMultiplier);
         fclose(file);
     }
@@ -139,6 +158,26 @@ static short ClampAudioSample(float sample)
     }
 
     return (short)sample;
+}
+
+static void CloseDecodedPcmDump(void)
+{
+    if (decodedPcmDumpFile != NULL) {
+        fclose(decodedPcmDumpFile);
+        decodedPcmDumpFile = NULL;
+    }
+}
+
+static void UpdateAudioDiagnosticsEnabled(void)
+{
+    audioDiagnosticsEnabled = NO;
+    if (hostAddress != nil) {
+        NSString *uuid = [SettingsClass getHostUUIDFrom:hostAddress];
+        if (uuid != nil) {
+            audioDiagnosticsEnabled = [SettingsClass audioDiagnosticsEnabledFor:uuid];
+        }
+    }
+    LiSetAudioDiagnosticsEnabled(audioDiagnosticsEnabled);
 }
 
 int DrDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags)
@@ -203,54 +242,57 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
 int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION originalOpusConfig, void* context, int flags)
 {
     int err;
-    AudioChannelLayout channelLayout = {};
     OPUS_MULTISTREAM_CONFIGURATION opusConfig = *originalOpusConfig;
-    
-    // Initialize the circular buffer
-    audioBufferWriteIndex = audioBufferReadIndex = 0;
-    audioSamplesPerFrame = opusConfig.samplesPerFrame;
-    audioMaxSamplesPerFrame = opusConfig.sampleRate * MAX_OPUS_FRAME_DURATION_MS / 1000;
-    audioBufferStride = opusConfig.channelCount * audioMaxSamplesPerFrame;
-    audioBufferEntries = CIRCULAR_BUFFER_DURATION / (opusConfig.samplesPerFrame / (opusConfig.sampleRate / 1000));
-    if (audioBufferEntries <= AUDIO_QUEUE_BUFFERS) {
-        audioBufferEntries = AUDIO_QUEUE_BUFFERS + 1;
-    }
-    audioBufferFrameCounts = calloc(audioBufferEntries, sizeof(*audioBufferFrameCounts));
-    audioCircularBuffer = malloc(audioBufferEntries * audioBufferStride * sizeof(*audioCircularBuffer));
-    if (audioBufferFrameCounts == NULL || audioCircularBuffer == NULL) {
-        Log(LOG_E, @"Error allocating output queue\n");
-        free(audioBufferFrameCounts);
-        free(audioCircularBuffer);
-        audioBufferFrameCounts = NULL;
-        audioCircularBuffer = NULL;
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        Log(LOG_E, @"Failed to initialize SDL audio subsystem: %s\n", SDL_GetError());
         return -1;
     }
     
     channelCount = opusConfig.channelCount;
+    CloseDecodedPcmDump();
+    decodedPcmDumpFramesRemaining = (unsigned long long)opusConfig.sampleRate * DECODED_PCM_DUMP_SECONDS;
+
+    if (audioDiagnosticsEnabled) {
+        decodedPcmDumpFile = fopen("/tmp/moonlight_decoded_audio.pcm", "wb");
+        FILE *metadataFile = fopen("/tmp/moonlight_decoded_audio.txt", "w");
+        if (metadataFile != NULL) {
+            fprintf(metadataFile,
+                    "format=s16le\nsampleRate=%d\nchannels=%d\nseconds=%d\nsource=decoded PCM before SDL queue\n",
+                    opusConfig.sampleRate,
+                    opusConfig.channelCount,
+                    DECODED_PCM_DUMP_SECONDS);
+            fclose(metadataFile);
+        }
+        if (decodedPcmDumpFile == NULL) {
+            Log(LOG_W, @"Unable to open decoded PCM dump at /tmp/moonlight_decoded_audio.pcm");
+        }
+        else {
+            Log(LOG_I, @"Audio diagnostics enabled. Writing client logs to /tmp/moonlight_audio_diagnostics.log and decoded PCM to /tmp/moonlight_decoded_audio.pcm");
+        }
+    }
     
-    switch (opusConfig.channelCount) {
-        case 2:
-            channelLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
-            break;
-        case 4:
-            channelLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Quadraphonic;
-            break;
-        case 6:
-            channelLayout.mChannelLayoutTag = kAudioChannelLayoutTag_AudioUnit_5_1;
-            break;
-        case 8:
-            channelLayout.mChannelLayoutTag = kAudioChannelLayoutTag_AudioUnit_7_1;
-            
-            // Swap SL/SR and RL/RR to match the selected channel layout
-            opusConfig.mapping[4] = originalOpusConfig->mapping[6];
-            opusConfig.mapping[5] = originalOpusConfig->mapping[7];
-            opusConfig.mapping[6] = originalOpusConfig->mapping[4];
-            opusConfig.mapping[7] = originalOpusConfig->mapping[5];
-            break;
-        default:
-            // Unsupported channel layout
-            Log(LOG_E, @"Unsupported channel layout: %d\n", opusConfig.channelCount);
-            abort();
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = opusConfig.sampleRate;
+    want.format = AUDIO_S16SYS;
+    want.channels = opusConfig.channelCount;
+    want.samples = opusConfig.samplesPerFrame;
+
+    audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (audioDevice == 0) {
+        Log(LOG_E, @"Failed to open SDL audio device: %s\n", SDL_GetError());
+        ArCleanup();
+        return -1;
+    }
+
+    audioConfig = opusConfig;
+    audioFrameSize = opusConfig.samplesPerFrame * sizeof(short) * opusConfig.channelCount;
+    audioBuffer = SDL_malloc(audioFrameSize);
+    if (audioBuffer == NULL) {
+        Log(LOG_E, @"Failed to allocate SDL audio frame buffer");
+        ArCleanup();
+        return -1;
     }
     
     opusDecoder = opus_multistream_decoder_create(opusConfig.sampleRate,
@@ -259,67 +301,14 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION originalOpusC
                                                   opusConfig.coupledStreams,
                                                   opusConfig.mapping,
                                                   &err);
-
-#if TARGET_OS_IPHONE
-    // Configure the audio session for our app
-    NSError *audioSessionError = nil;
-    AVAudioSession* audioSession = [AVAudioSession sharedInstance];
-
-    [audioSession setPreferredSampleRate:opusConfig.sampleRate error:&audioSessionError];
-    [audioSession setCategory:AVAudioSessionCategoryPlayback
-                  withOptions:AVAudioSessionCategoryOptionMixWithOthers
-                        error:&audioSessionError];
-    [audioSession setPreferredIOBufferDuration:(opusConfig.samplesPerFrame / (opusConfig.sampleRate / 1000)) / 1000.0
-                                         error:&audioSessionError];
-    [audioSession setActive: YES error: &audioSessionError];
-    
-    // FIXME: Calling this breaks surround audio for some reason
-    //[audioSession setPreferredOutputNumberOfChannels:opusConfig->channelCount error:&audioSessionError];
-#endif
-
-    OSStatus status;
-    
-    AudioStreamBasicDescription audioFormat = {0};
-    audioFormat.mSampleRate = opusConfig.sampleRate;
-    audioFormat.mBitsPerChannel = 16;
-    audioFormat.mFormatID = kAudioFormatLinearPCM;
-    audioFormat.mFormatFlags = kAudioFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    audioFormat.mChannelsPerFrame = opusConfig.channelCount;
-    audioFormat.mBytesPerFrame = audioFormat.mChannelsPerFrame * (audioFormat.mBitsPerChannel / 8);
-    audioFormat.mBytesPerPacket = audioFormat.mBytesPerFrame;
-    audioFormat.mFramesPerPacket = audioFormat.mBytesPerPacket / audioFormat.mBytesPerFrame;
-    audioFormat.mReserved = 0;
-
-    status = AudioQueueNewOutput(&audioFormat, FillOutputBuffer, nil, nil, nil, 0, &audioQueue);
-    if (status != noErr) {
-        Log(LOG_E, @"Error allocating output queue: %d\n", status);
-        return status;
+    if (opusDecoder == NULL) {
+        Log(LOG_E, @"Failed to create Opus decoder");
+        ArCleanup();
+        return -1;
     }
-    
-    // We need to specify a channel layout for surround sound configurations
-    status = AudioQueueSetProperty(audioQueue, kAudioQueueProperty_ChannelLayout, &channelLayout, sizeof(channelLayout));
-    if (status != noErr) {
-        Log(LOG_E, @"Error configuring surround channel layout: %d\n", status);
-        return status;
-    }
-    
-    for (int i = 0; i < AUDIO_QUEUE_BUFFERS; i++) {
-        status = AudioQueueAllocateBuffer(audioQueue, audioFormat.mBytesPerFrame * audioMaxSamplesPerFrame, &audioBuffers[i]);
-        if (status != noErr) {
-            Log(LOG_E, @"Error allocating output buffer: %d\n", status);
-            return status;
-        }
-        
-        FillOutputBuffer(nil, audioQueue, audioBuffers[i]);
-    }
-    
-    status = AudioQueueStart(audioQueue, nil);
-    if (status != noErr) {
-        Log(LOG_E, @"Error starting queue: %d\n", status);
-        return status;
-    }
-    
-    return status;
+
+    SDL_PauseAudioDevice(audioDevice, 0);
+    return 0;
 }
 
 void ArCleanup(void)
@@ -328,60 +317,73 @@ void ArCleanup(void)
         opus_multistream_decoder_destroy(opusDecoder);
         opusDecoder = NULL;
     }
-    
-    // Stop before disposing to avoid massive delay inside
-    // AudioQueueDispose() (iOS bug?)
-    AudioQueueStop(audioQueue, true);
-    
-    // Also frees buffers
-    AudioQueueDispose(audioQueue, true);
-    
-    // Must be freed after the queue is stopped
-    if (audioCircularBuffer != NULL) {
-        free(audioCircularBuffer);
-        audioCircularBuffer = NULL;
+    CloseDecodedPcmDump();
+
+    if (audioDevice != 0) {
+        SDL_CloseAudioDevice(audioDevice);
+        audioDevice = 0;
     }
-    if (audioBufferFrameCounts != NULL) {
-        free(audioBufferFrameCounts);
-        audioBufferFrameCounts = NULL;
+
+    if (audioBuffer != NULL) {
+        SDL_free(audioBuffer);
+        audioBuffer = NULL;
     }
-    
-#if TARGET_OS_IPHONE
-    // Audio session is now inactive
-    [[AVAudioSession sharedInstance] setActive: NO error: nil];
-#endif
+
+    audioFrameSize = 0;
+    LiSetAudioDiagnosticsEnabled(false);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
     int decodeLen;
     
-    // Check if there is space for this sample in the buffer. Again, this can race
-    // but in the worst case, we'll not see the sample callback having consumed a sample.
-    if (((audioBufferWriteIndex + 1) % audioBufferEntries) == audioBufferReadIndex) {
+    int pendingMs = LiGetPendingAudioDuration();
+    UpdateAtomicMaxInt(&audioMaxPendingMs, pendingMs);
+
+    // Drop only when the decoder queue is far enough behind that preserving every packet would
+    // turn a short scheduling stall into sustained audio latency.
+    if (pendingMs > AUDIO_BACKLOG_DROP_THRESHOLD_MS) {
         atomic_fetch_add_explicit(&audioRingDrops, 1, memory_order_relaxed);
         LogAudioDiagnosticsIfNeeded();
         return;
     }
     
     decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
-                                        (short*)&audioCircularBuffer[audioBufferWriteIndex * audioBufferStride], audioMaxSamplesPerFrame, 0);
+                                        (short*)audioBuffer, audioConfig.samplesPerFrame, 0);
     if (decodeLen > 0) {
         // Apply volume adjustment to each audio sample
-        short* buffer = &audioCircularBuffer[audioBufferWriteIndex * audioBufferStride];
+        short* buffer = (short*)audioBuffer;
         for (int i = 0; i < decodeLen * channelCount; i++) {
             buffer[i] = ClampAudioSample(buffer[i] * audioVolumeMultiplier);
         }
-        audioBufferFrameCounts[audioBufferWriteIndex] = decodeLen;
+
+        if (decodedPcmDumpFile != NULL && decodedPcmDumpFramesRemaining > 0) {
+            int framesToWrite = decodeLen;
+            if ((unsigned long long)framesToWrite > decodedPcmDumpFramesRemaining) {
+                framesToWrite = (int)decodedPcmDumpFramesRemaining;
+            }
+
+            fwrite(buffer, channelCount * sizeof(short), framesToWrite, decodedPcmDumpFile);
+            decodedPcmDumpFramesRemaining -= framesToWrite;
+            if (decodedPcmDumpFramesRemaining == 0) {
+                CloseDecodedPcmDump();
+                Log(LOG_I, @"Finished decoded PCM dump at /tmp/moonlight_decoded_audio.pcm");
+            }
+        }
         atomic_fetch_add_explicit(&audioDecodedPackets, 1, memory_order_relaxed);
-        
-        // Use a full memory barrier to ensure the circular buffer is written before incrementing the index
-        __sync_synchronize();
-        
-        // This can race with the reader in the sample callback, however this is a benign
-        // race since we'll either read the original value of s_WriteIndex (which is safe,
-        // we just won't consider this sample) or the new value of s_WriteIndex
-        audioBufferWriteIndex = (audioBufferWriteIndex + 1) % audioBufferEntries;
+
+        while (audioFrameSize != 0 && SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize > SDL_AUDIO_THROTTLE_FRAMES) {
+            UpdateAtomicMaxInt(&audioMaxQueuedFrames, AudioQueuedBuffers());
+            atomic_fetch_add_explicit(&audioThrottleSleeps, 1, memory_order_relaxed);
+            SDL_Delay(1);
+        }
+        UpdateAtomicMaxInt(&audioMaxQueuedFrames, AudioQueuedBuffers());
+
+        if (SDL_QueueAudio(audioDevice, audioBuffer, sizeof(short) * decodeLen * channelCount) < 0) {
+            atomic_fetch_add_explicit(&audioOutputUnderruns, 1, memory_order_relaxed);
+            Log(LOG_E, @"Failed to queue SDL audio sample: %s\n", SDL_GetError());
+        }
     }
     else {
         atomic_fetch_add_explicit(&audioDecodeErrors, 1, memory_order_relaxed);
@@ -483,6 +485,7 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
     
     hostAddress = config.host;
     [self updateVolume];
+    UpdateAudioDiagnosticsEnabled();
     
     NSString* connectionHost = [Utils hostFromAddressString:config.host];
     strncpy(_hostString,
@@ -579,8 +582,7 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
     _arCallbacks.init = ArInit;
     _arCallbacks.cleanup = ArCleanup;
     _arCallbacks.decodeAndPlaySample = ArDecodeAndPlaySample;
-    _arCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT |
-                                CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION;
+    _arCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION;
 
     LiInitializeConnectionCallbacks(&_clCallbacks);
     _clCallbacks.stageStarting = ClStageStarting;
@@ -594,47 +596,6 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
     _clCallbacks.cursorState = ClCursorState;
 
     return self;
-}
-
-static void FillOutputBuffer(void *aqData,
-                             AudioQueueRef inAQ,
-                             AudioQueueBufferRef inBuffer) {
-    int framesToSubmit = audioSamplesPerFrame;
-    
-    // If the indexes aren't equal, we have a sample
-    if (audioBufferWriteIndex != audioBufferReadIndex) {
-        framesToSubmit = audioBufferFrameCounts[audioBufferReadIndex];
-        if (framesToSubmit <= 0 || framesToSubmit > audioMaxSamplesPerFrame) {
-            atomic_fetch_add_explicit(&audioInvalidFrameCounts, 1, memory_order_relaxed);
-            framesToSubmit = audioSamplesPerFrame;
-        }
-        inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
-        assert(inBuffer->mAudioDataByteSize <= inBuffer->mAudioDataBytesCapacity);
-
-        // Copy data to the audio buffer
-        memcpy(inBuffer->mAudioData,
-               &audioCircularBuffer[audioBufferReadIndex * audioBufferStride],
-               inBuffer->mAudioDataByteSize);
-        audioBufferFrameCounts[audioBufferReadIndex] = 0;
-        
-        // Use a full memory barrier to ensure the circular buffer is read before incrementing the index
-        __sync_synchronize();
-        
-        // This can race with the reader in the AudDecDecodeAndPlaySample function. This is
-        // not a problem because at worst, it just won't see that we've consumed this sample yet.
-        audioBufferReadIndex = (audioBufferReadIndex + 1) % audioBufferEntries;
-    }
-    else {
-        // No data, so play silence
-        atomic_fetch_add_explicit(&audioOutputUnderruns, 1, memory_order_relaxed);
-        inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
-        assert(inBuffer->mAudioDataByteSize <= inBuffer->mAudioDataBytesCapacity);
-        memset(inBuffer->mAudioData, 0, inBuffer->mAudioDataByteSize);
-    }
-
-    LogAudioDiagnosticsIfNeeded();
-    
-    AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, NULL);
 }
 
 -(void) main

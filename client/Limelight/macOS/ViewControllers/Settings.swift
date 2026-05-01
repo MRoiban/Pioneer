@@ -40,6 +40,7 @@ struct Settings: Encodable, Decodable {
     let parsecMouseEventDrivenPosition: Bool?
     let parsecMouseIdleHostCorrection: Bool?
     let parsecMouseDeltaAccumulatedVisibleCursor: Bool?
+    let audioDiagnosticsEnabled: Bool?
     
     let emulateGuide: Bool
     let windowsCtrlSource: Int?
@@ -101,6 +102,7 @@ class SettingsClass: NSObject {
                     "parsecMouseEventDrivenPosition": settings.parsecMouseEventDrivenPosition ?? SettingsModel.defaultParsecMouseEventDrivenPosition,
                     "parsecMouseIdleHostCorrection": settings.parsecMouseIdleHostCorrection ?? SettingsModel.defaultParsecMouseIdleHostCorrection,
                     "parsecMouseDeltaAccumulatedVisibleCursor": settings.parsecMouseDeltaAccumulatedVisibleCursor ?? SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor,
+                    "audioDiagnosticsEnabled": settings.audioDiagnosticsEnabled ?? SettingsModel.defaultAudioDiagnosticsEnabled,
                     "emulateGuide": settings.emulateGuide,
                     "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
                     "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
@@ -290,6 +292,14 @@ class SettingsClass: NSObject {
         }
 
         return SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor
+    }
+
+    @objc static func audioDiagnosticsEnabled(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.audioDiagnosticsEnabled ?? SettingsModel.defaultAudioDiagnosticsEnabled
+        }
+
+        return SettingsModel.defaultAudioDiagnosticsEnabled
     }
 
     @objc static func appArtworkDimensions(for key: String) -> CGSize {

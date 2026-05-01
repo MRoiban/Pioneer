@@ -5,6 +5,9 @@
 #define INITGUID
 
 // standard includes
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <format>
 
 // platform includes
@@ -35,8 +38,18 @@ constexpr auto STEAM_DRIVER_SUBDIR = L"x64";
 #endif
 
 namespace {
+  using namespace std::literals;
 
   constexpr auto SAMPLE_RATE = 48000;
+
+  bool audio_diagnostics_enabled() {
+    static const bool enabled = [] {
+      const char *value = std::getenv("SUNSHINE_AUDIO_DIAGNOSTICS");
+      return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+
+    return enabled;
+  }
 #ifdef STEAM_DRIVER_SUBDIR
   constexpr auto STEAM_AUDIO_DRIVER_PATH = L"%CommonProgramFiles(x86)%\\Steam\\drivers\\Windows10\\" STEAM_DRIVER_SUBDIR L"\\SteamStreamingSpeakers.inf";
 #endif
@@ -427,6 +440,10 @@ namespace platf::audio {
   class mic_wasapi_t: public mic_t {
   public:
     capture_e sample(std::vector<float> &sample_out) override {
+      if (audio_diagnostics_enabled()) {
+        audio_diag_sample_calls++;
+      }
+
       auto sample_size = sample_out.size();
 
       // Refill the sample buffer if needed
@@ -443,11 +460,15 @@ namespace platf::audio {
 
       // Fill the output buffer with samples
       std::copy_n(std::begin(sample_buf), sample_size, std::begin(sample_out));
+      if (audio_diagnostics_enabled()) {
+        audio_diag_output_samples += sample_size / channels;
+      }
 
       // Move any excess samples to the front of the buffer
       std::move(&sample_buf[sample_size], sample_buf_pos, std::begin(sample_buf));
       sample_buf_pos -= sample_size;
 
+      log_diagnostics_if_needed();
       return capture_e::ok;
     }
 
@@ -573,7 +594,52 @@ namespace platf::audio {
     }
 
   private:
+    void log_diagnostics_if_needed() {
+      if (!audio_diagnostics_enabled()) {
+        return;
+      }
+
+      auto now = std::chrono::steady_clock::now();
+      if (now - audio_diag_last_log_time < 5s) {
+        return;
+      }
+      audio_diag_last_log_time = now;
+
+      BOOST_LOG(info) << "Windows audio capture diagnostics: sampleCalls="sv
+                      << audio_diag_sample_calls
+                      << " fillCalls="sv
+                      << audio_diag_fill_calls
+                      << " eventTimeouts="sv
+                      << audio_diag_event_timeouts
+                      << " discontinuities="sv
+                      << audio_diag_discontinuities
+                      << " silentBuffers="sv
+                      << audio_diag_silent_buffers
+                      << " overflowEvents="sv
+                      << audio_diag_overflow_events
+                      << " capturedFrames="sv
+                      << audio_diag_captured_frames
+                      << " outputFrames="sv
+                      << audio_diag_output_samples
+                      << " maxEventWaitMs="sv
+                      << audio_diag_max_event_wait_ms;
+
+      audio_diag_sample_calls = 0;
+      audio_diag_fill_calls = 0;
+      audio_diag_event_timeouts = 0;
+      audio_diag_discontinuities = 0;
+      audio_diag_silent_buffers = 0;
+      audio_diag_overflow_events = 0;
+      audio_diag_captured_frames = 0;
+      audio_diag_output_samples = 0;
+      audio_diag_max_event_wait_ms = 0;
+    }
+
     capture_e _fill_buffer() {
+      if (audio_diagnostics_enabled()) {
+        audio_diag_fill_calls++;
+      }
+
       HRESULT status;
 
       // Total number of samples
@@ -598,11 +664,22 @@ namespace platf::audio {
         return capture_e::reinit;
       }
 
+      auto wait_start = std::chrono::steady_clock::now();
       status = WaitForSingleObjectEx(audio_event.get(), default_latency_ms, FALSE);
+      if (audio_diagnostics_enabled()) {
+        auto wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - wait_start).count();
+        if (wait_ms > 0) {
+          audio_diag_max_event_wait_ms = std::max<std::uint64_t>(audio_diag_max_event_wait_ms, static_cast<std::uint64_t>(wait_ms));
+        }
+      }
       switch (status) {
         case WAIT_OBJECT_0:
           break;
         case WAIT_TIMEOUT:
+          if (audio_diagnostics_enabled()) {
+            audio_diag_event_timeouts++;
+            log_diagnostics_if_needed();
+          }
           return capture_e::timeout;
         default:
           BOOST_LOG(error) << "Couldn't wait for audio event: [0x"sv << util::hex(status).to_string_view() << ']';
@@ -635,6 +712,9 @@ namespace platf::audio {
         }
 
         if (buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
+          if (audio_diagnostics_enabled()) {
+            audio_diag_discontinuities++;
+          }
           BOOST_LOG(debug) << "Audio capture signaled buffer discontinuity";
         }
 
@@ -642,13 +722,22 @@ namespace platf::audio {
         auto n = std::min(sample_aligned.uninitialized, block_aligned.audio_sample_size * channels);
 
         if (n < block_aligned.audio_sample_size * channels) {
+          if (audio_diagnostics_enabled()) {
+            audio_diag_overflow_events++;
+          }
           BOOST_LOG(warning) << "Audio capture buffer overflow";
         }
 
         if (buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+          if (audio_diagnostics_enabled()) {
+            audio_diag_silent_buffers++;
+          }
           std::fill_n(sample_buf_pos, n, 0);
         } else {
           std::copy_n(sample_aligned.samples, n, sample_buf_pos);
+        }
+        if (audio_diagnostics_enabled()) {
+          audio_diag_captured_frames += block_aligned.audio_sample_size;
         }
 
         sample_buf_pos += n;
@@ -686,6 +775,16 @@ namespace platf::audio {
     bool continuous_audio;
 
     HANDLE mmcss_task_handle = nullptr;
+    std::chrono::steady_clock::time_point audio_diag_last_log_time = std::chrono::steady_clock::now();
+    std::uint64_t audio_diag_sample_calls = 0;
+    std::uint64_t audio_diag_fill_calls = 0;
+    std::uint64_t audio_diag_event_timeouts = 0;
+    std::uint64_t audio_diag_discontinuities = 0;
+    std::uint64_t audio_diag_silent_buffers = 0;
+    std::uint64_t audio_diag_overflow_events = 0;
+    std::uint64_t audio_diag_captured_frames = 0;
+    std::uint64_t audio_diag_output_samples = 0;
+    std::uint64_t audio_diag_max_event_wait_ms = 0;
   };
 
   class audio_control_t: public ::platf::audio_control_t {

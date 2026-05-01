@@ -4,6 +4,9 @@
  */
 
 // standard includes
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <future>
@@ -94,6 +97,15 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace stream {
+  static bool audio_diagnostics_enabled() {
+    static const bool enabled = [] {
+      const char *value = std::getenv("SUNSHINE_AUDIO_DIAGNOSTICS");
+      return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+
+    return enabled;
+  }
+
 
   enum class socket_e : int {
     video,  ///< Video
@@ -1929,6 +1941,14 @@ namespace stream {
     platf::set_thread_name("stream::audioBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
+    auto diagnostics_enabled = audio_diagnostics_enabled();
+    auto last_log_time = std::chrono::steady_clock::now();
+    auto last_send_time = last_log_time;
+    std::uint64_t data_sends = 0;
+    std::uint64_t fec_sends = 0;
+    std::uint64_t send_errors = 0;
+    std::uint64_t max_send_gap_ms = 0;
+
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
         break;
@@ -1960,6 +1980,15 @@ namespace stream {
 
       auto peer_address = session->audio.peer.address();
       try {
+        if (diagnostics_enabled) {
+          auto now = std::chrono::steady_clock::now();
+          auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_send_time).count();
+          if (gap > 0) {
+            max_send_gap_ms = std::max<std::uint64_t>(max_send_gap_ms, static_cast<std::uint64_t>(gap));
+          }
+          last_send_time = now;
+        }
+
         auto send_info = platf::send_info_t {
           (const char *) &audio_packet,
           sizeof(audio_packet),
@@ -1971,6 +2000,9 @@ namespace stream {
           session->localAddress,
         };
         platf::send(send_info);
+        if (diagnostics_enabled) {
+          data_sends++;
+        }
 
         auto &fec_packet = session->audio.fec_packet;
         // initialize the FEC header at the beginning of the FEC block
@@ -1998,12 +2030,39 @@ namespace stream {
               session->localAddress,
             };
             platf::send(send_info);
+            if (diagnostics_enabled) {
+              fec_sends++;
+            }
             BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << ' ' << x << "] ::  send..."sv;
           }
         }
       } catch (const std::exception &e) {
+        if (diagnostics_enabled) {
+          send_errors++;
+        }
         BOOST_LOG(error) << "Broadcast audio failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
+      }
+
+      if (diagnostics_enabled) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_log_time >= 5s) {
+          BOOST_LOG(info) << "Audio send diagnostics: dataSends="sv
+                          << data_sends
+                          << " fecSends="sv
+                          << fec_sends
+                          << " sendErrors="sv
+                          << send_errors
+                          << " maxSendGapMs="sv
+                          << max_send_gap_ms
+                          << " peer="sv
+                          << session->audio.peer;
+          data_sends = 0;
+          fec_sends = 0;
+          send_errors = 0;
+          max_send_gap_ms = 0;
+          last_log_time = now;
+        }
       }
     }
 

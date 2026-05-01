@@ -17,6 +17,15 @@ static unsigned short lastSeq;
 static bool pingThreadStarted;
 static bool receivedDataFromPeer;
 static uint64_t firstReceiveTime;
+static uint64_t lastAudioNetworkStatsLogTime;
+static uint32_t audioRecvPackets;
+static uint32_t audioRecvTimeouts;
+static uint32_t audioInitialDrops;
+static uint32_t audioPacketsHandledNow;
+static uint32_t audioPacketsQueued;
+static uint32_t audioPacketsRecovered;
+static uint32_t audioPlcPackets;
+static bool audioDiagnosticsEnabled;
 
 #ifdef LC_DEBUG
 #define INVALID_OPUS_HEADER 0x00
@@ -29,6 +38,55 @@ static uint8_t opusHeaderByte;
 // it needs to be. We need a cushion in case our thread gets blocked
 // for longer than normal.
 #define RTP_RECV_BUFFER (64 * 1024)
+
+static void logAudioNetworkStatsIfNeeded(void) {
+    if (!audioDiagnosticsEnabled) {
+        return;
+    }
+
+    uint64_t now = PltGetMillis();
+
+    if (lastAudioNetworkStatsLogTime != 0 && now - lastAudioNetworkStatsLogTime < 5000) {
+        return;
+    }
+    lastAudioNetworkStatsLogTime = now;
+
+    FILE* file = fopen("/tmp/moonlight_audio_network.log", "a");
+    if (file != NULL) {
+        fprintf(file,
+                "%llu Audio network diagnostics: recv=%u timeouts=%u initialDrops=%u handleNow=%u queued=%u recovered=%u plc=%u\n",
+                (unsigned long long)now,
+                audioRecvPackets,
+                audioRecvTimeouts,
+                audioInitialDrops,
+                audioPacketsHandledNow,
+                audioPacketsQueued,
+                audioPacketsRecovered,
+                audioPlcPackets);
+        fclose(file);
+    }
+
+    Limelog("Audio network diagnostics: recv=%u timeouts=%u initialDrops=%u handleNow=%u queued=%u recovered=%u plc=%u\n",
+            audioRecvPackets,
+            audioRecvTimeouts,
+            audioInitialDrops,
+            audioPacketsHandledNow,
+            audioPacketsQueued,
+            audioPacketsRecovered,
+            audioPlcPackets);
+
+    audioRecvPackets = 0;
+    audioRecvTimeouts = 0;
+    audioInitialDrops = 0;
+    audioPacketsHandledNow = 0;
+    audioPacketsQueued = 0;
+    audioPacketsRecovered = 0;
+    audioPlcPackets = 0;
+}
+
+void LiSetAudioDiagnosticsEnabled(bool enabled) {
+    audioDiagnosticsEnabled = enabled;
+}
 
 typedef struct _QUEUE_AUDIO_PACKET_HEADER {
     LINKED_BLOCKING_QUEUE_ENTRY lentry;
@@ -77,6 +135,14 @@ int initializeAudioStream(void) {
     receivedDataFromPeer = false;
     pingThreadStarted = false;
     firstReceiveTime = 0;
+    lastAudioNetworkStatsLogTime = 0;
+    audioRecvPackets = 0;
+    audioRecvTimeouts = 0;
+    audioInitialDrops = 0;
+    audioPacketsHandledNow = 0;
+    audioPacketsQueued = 0;
+    audioPacketsRecovered = 0;
+    audioPlcPackets = 0;
     audioDecryptionCtx = PltCreateCryptoContext();
 #ifdef LC_DEBUG
     opusHeaderByte = INVALID_OPUS_HEADER;
@@ -92,6 +158,7 @@ int initializeAudioStream(void) {
     if (rtpSocket == INVALID_SOCKET) {
         return LastSocketFail();
     }
+    setSocketQos(rtpSocket, SOCK_QOS_TYPE_AUDIO);
 
     return 0;
 }
@@ -170,6 +237,7 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
     // packet. Trigger packet loss concealment logic in libopus by
     // invoking the decoder with a NULL buffer.
     if (packet->header.size == 0) {
+        audioPlcPackets++;
         AudioCallbacks.decodeAndPlaySample(NULL, 0);
         return;
     }
@@ -232,8 +300,9 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
         else {
             // Opus header should stay constant for the entire stream.
             // If it doesn't, it may indicate that the RtpAudioQueue
-            // incorrectly recovered a data shard.
-            LC_ASSERT(((uint8_t*)(rtp + 1))[0] == opusHeaderByte);
+            // incorrectly recovered a data shard. Sunshine violates this for
+            // surround sound in some cases, so just ignore it.
+            LC_ASSERT(((uint8_t*)(rtp + 1))[0] == opusHeaderByte || IS_SUNSHINE());
         }
 #endif
 
@@ -279,6 +348,8 @@ static void AudioReceiveThreadProc(void* context) {
             break;
         }
         else if (packet->header.size == 0) {
+            audioRecvTimeouts++;
+            logAudioNetworkStatsIfNeeded();
             // Receive timed out; try again
             
             if (!receivedDataFromPeer) {
@@ -291,9 +362,11 @@ static void AudioReceiveThreadProc(void* context) {
             }
             continue;
         }
+        audioRecvPackets++;
 
         if (packet->header.size < (int)sizeof(RTP_PACKET)) {
             // Runt packet
+            logAudioNetworkStatsIfNeeded();
             continue;
         }
 
@@ -316,7 +389,9 @@ static void AudioReceiveThreadProc(void* context) {
             // Only count actual audio data (not FEC) in the packets to drop calculation
             if (rtp->packetType == 97) {
                 packetsToDrop--;
+                audioInitialDrops++;
             }
+            logAudioNetworkStatsIfNeeded();
             continue;
         }
 
@@ -327,6 +402,7 @@ static void AudioReceiveThreadProc(void* context) {
 
         queueStatus = RtpaAddPacket(&rtpAudioQueue, (PRTP_PACKET)&packet->data[0], (uint16_t)packet->header.size);
         if (RTPQ_HANDLE_NOW(queueStatus)) {
+            audioPacketsHandledNow++;
             if ((AudioCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
                 if (!queuePacketToLbq(&packet)) {
                     // An exit signal was received
@@ -343,6 +419,7 @@ static void AudioReceiveThreadProc(void* context) {
         }
         else {
             if (RTPQ_PACKET_CONSUMED(queueStatus)) {
+                audioPacketsQueued++;
                 // The queue consumed our packet, so we must allocate a new one
                 packet = NULL;
             }
@@ -352,6 +429,7 @@ static void AudioReceiveThreadProc(void* context) {
                 uint16_t length;
                 PQUEUED_AUDIO_PACKET queuedPacket;
                 while ((queuedPacket = (PQUEUED_AUDIO_PACKET)RtpaGetQueuedPacket(&rtpAudioQueue, sizeof(QUEUED_AUDIO_PACKET_HEADER), &length)) != NULL) {
+                    audioPacketsRecovered++;
                     // Populate header data (not preserved in queued packets)
                     queuedPacket->header.size = length;
 
@@ -378,6 +456,7 @@ static void AudioReceiveThreadProc(void* context) {
                 }
             }
         }
+        logAudioNetworkStatsIfNeeded();
     }
     
     if (packet != NULL) {

@@ -115,6 +115,9 @@ typedef struct _STREAM_CONFIGURATION {
 // Use this function to zero the stream configuration when allocated on the stack or heap
 void LiInitializeStreamConfiguration(PSTREAM_CONFIGURATION streamConfig);
 
+// Enables detailed audio diagnostics counters for client receive/decode/playback investigation.
+void LiSetAudioDiagnosticsEnabled(bool enabled);
+
 // These identify codec configuration data in the buffer lists
 // of frames identified as IDR frames.
 #define BUFFER_TYPE_PICDATA  0x00

@@ -209,6 +209,11 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var audioDiagnosticsEnabled: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
 
     @Published var emulateGuide: Bool {
         didSet {
@@ -354,6 +359,7 @@ class SettingsModel: ObservableObject {
     static let defaultParsecMouseEventDrivenPosition = true
     static let defaultParsecMouseIdleHostCorrection = true
     static let defaultParsecMouseDeltaAccumulatedVisibleCursor = true
+    static let defaultAudioDiagnosticsEnabled = false
     static let defaultEmulateGuide = false
     static let defaultWindowsCtrlSource = "Control"
     static let defaultWindowsShiftSource = "Shift"
@@ -509,6 +515,7 @@ class SettingsModel: ObservableObject {
         parsecMouseEventDrivenPosition = Self.defaultParsecMouseEventDrivenPosition
         parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
         parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
+        audioDiagnosticsEnabled = Self.defaultAudioDiagnosticsEnabled
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -558,6 +565,7 @@ class SettingsModel: ObservableObject {
         parsecMouseEventDrivenPosition = Self.defaultParsecMouseEventDrivenPosition
         parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
         parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
+        audioDiagnosticsEnabled = Self.defaultAudioDiagnosticsEnabled
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -635,6 +643,7 @@ class SettingsModel: ObservableObject {
                 parsecMouseEventDrivenPosition = settings.parsecMouseEventDrivenPosition ?? Self.defaultParsecMouseEventDrivenPosition
                 parsecMouseIdleHostCorrection = settings.parsecMouseIdleHostCorrection ?? Self.defaultParsecMouseIdleHostCorrection
                 parsecMouseDeltaAccumulatedVisibleCursor = settings.parsecMouseDeltaAccumulatedVisibleCursor ?? Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
+                audioDiagnosticsEnabled = settings.audioDiagnosticsEnabled ?? Self.defaultAudioDiagnosticsEnabled
                 
                 emulateGuide = settings.emulateGuide
                 selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
@@ -742,6 +751,7 @@ class SettingsModel: ObservableObject {
             parsecMouseEventDrivenPosition: parsecMouseEventDrivenPosition,
             parsecMouseIdleHostCorrection: parsecMouseIdleHostCorrection,
             parsecMouseDeltaAccumulatedVisibleCursor: parsecMouseDeltaAccumulatedVisibleCursor,
+            audioDiagnosticsEnabled: audioDiagnosticsEnabled,
             emulateGuide: emulateGuide,
             windowsCtrlSource: windowsCtrlSource,
             windowsShiftSource: windowsShiftSource,

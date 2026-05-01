@@ -3,7 +3,10 @@
  * @brief Definitions for audio capture and encoding.
  */
 // standard includes
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <thread>
 
 // lib includes
@@ -27,6 +30,7 @@ namespace audio {
   static void stop_audio_control(audio_ctx_t &);
   static void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params);
   static void sanitize_samples(std::vector<float> &sample);
+  static bool audio_diagnostics_enabled();
 
   int map_stream(int channels, bool quality);
 
@@ -85,6 +89,15 @@ namespace audio {
     },
   };
 
+  bool audio_diagnostics_enabled() {
+    static const bool enabled = [] {
+      const char *value = std::getenv("SUNSHINE_AUDIO_DIAGNOSTICS");
+      return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+
+    return enabled;
+  }
+
   void encodeThread(sample_queue_t samples, config_t config, void *channel_data) {
     auto packets = mail::man->queue<packet_t>(mail::audio_packets);
     auto stream = stream_configs[map_stream(config.channels, config.flags[config_t::HIGH_QUALITY])];
@@ -114,13 +127,33 @@ namespace audio {
                     << stream.bitrate / 1000 << " kbps (total), LOWDELAY"sv;
 
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;
+    auto diagnostics_enabled = audio_diagnostics_enabled();
+    auto last_log_time = std::chrono::steady_clock::now();
+    auto last_packet_time = last_log_time;
+    std::uint64_t samples_in = 0;
+    std::uint64_t encoded_packets = 0;
+    std::uint64_t encode_errors = 0;
+    std::uint64_t max_encode_gap_ms = 0;
+
     while (auto sample = samples->pop()) {
       sanitize_samples(*sample);
+      if (diagnostics_enabled) {
+        auto now = std::chrono::steady_clock::now();
+        auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_packet_time).count();
+        if (gap > 0) {
+          max_encode_gap_ms = std::max<std::uint64_t>(max_encode_gap_ms, static_cast<std::uint64_t>(gap));
+        }
+        last_packet_time = now;
+        samples_in++;
+      }
 
       buffer_t packet {1400};
 
       int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
       if (bytes < 0) {
+        if (diagnostics_enabled) {
+          encode_errors++;
+        }
         BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
         packets->stop();
 
@@ -129,6 +162,30 @@ namespace audio {
 
       packet.fake_resize(bytes);
       packets->raise(channel_data, std::move(packet));
+
+      if (diagnostics_enabled) {
+        encoded_packets++;
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_log_time >= 5s) {
+          BOOST_LOG(info) << "Audio encode diagnostics: samples="sv
+                          << samples_in
+                          << " encoded="sv
+                          << encoded_packets
+                          << " encodeErrors="sv
+                          << encode_errors
+                          << " maxEncodeGapMs="sv
+                          << max_encode_gap_ms
+                          << " frameSize="sv
+                          << frame_size
+                          << " channels="sv
+                          << stream.channelCount;
+          samples_in = 0;
+          encoded_packets = 0;
+          encode_errors = 0;
+          max_encode_gap_ms = 0;
+          last_log_time = now;
+        }
+      }
     }
   }
 

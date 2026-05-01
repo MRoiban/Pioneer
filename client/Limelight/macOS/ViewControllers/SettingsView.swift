@@ -805,6 +805,12 @@ struct DebugView: View {
                     ToggleCell(title: "Delta-Accumulated Visible Cursor", boolBinding: $settingsModel.parsecMouseDeltaAccumulatedVisibleCursor)
                 }
 
+                Spacer()
+                    .frame(height: 32)
+
+                FormSection(title: "Diagnostics") {
+                    ToggleCell(title: "Audio Diagnostics Logging", boolBinding: $settingsModel.audioDiagnosticsEnabled)
+                }
             }
             .padding()
         }

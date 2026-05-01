@@ -160,6 +160,31 @@ bool isSocketReadable(SOCKET s) {
     return true;
 }
 
+void setSocketQos(SOCKET s, int socketQosType) {
+#ifdef SO_NET_SERVICE_TYPE
+    int value;
+
+    switch (socketQosType) {
+    case SOCK_QOS_TYPE_BEST_EFFORT:
+        value = NET_SERVICE_TYPE_BE;
+        break;
+    case SOCK_QOS_TYPE_AUDIO:
+        value = NET_SERVICE_TYPE_VO;
+        break;
+    case SOCK_QOS_TYPE_VIDEO:
+        value = NET_SERVICE_TYPE_VI;
+        break;
+    default:
+        Limelog("Unknown QoS type: %d\n", socketQosType);
+        return;
+    }
+
+    if (setsockopt(s, SOL_SOCKET, SO_NET_SERVICE_TYPE, (char*)&value, sizeof(value)) < 0) {
+        Limelog("setsockopt(SO_NET_SERVICE_TYPE, %d) failed: %d\n", value, (int)LastSocketError());
+    }
+#endif
+}
+
 int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect) {
     int err;
     

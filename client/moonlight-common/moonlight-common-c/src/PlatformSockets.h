@@ -88,6 +88,7 @@ SOCKET createSocket(int addressFamily, int socketType, int protocol, bool nonBlo
 SOCKET connectTcpSocket(struct sockaddr_storage* dstaddr, SOCKADDR_LEN addrlen, unsigned short port, int timeoutSec);
 int sendMtuSafe(SOCKET s, char* buffer, int size);
 SOCKET bindUdpSocket(int addrfamily, int bufferSize);
+void setSocketQos(SOCKET s, int socketQosType);
 int enableNoDelay(SOCKET s);
 int setSocketNonBlocking(SOCKET s, bool enabled);
 int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect);
@@ -100,6 +101,11 @@ bool isSocketReadable(SOCKET s);
 
 #define TCP_PORT_MASK 0xFFFF
 #define TCP_PORT_FLAG_ALWAYS_TEST 0x10000
+
+#define SOCK_QOS_TYPE_BEST_EFFORT 0
+#define SOCK_QOS_TYPE_AUDIO 1
+#define SOCK_QOS_TYPE_VIDEO 2
+
 int resolveHostName(const char* host, int family, int tcpTestPort, struct sockaddr_storage* addr, SOCKADDR_LEN* addrLen);
 
 void enterLowLatencyMode(void);
