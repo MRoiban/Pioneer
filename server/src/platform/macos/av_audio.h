@@ -20,6 +20,10 @@
 // lib includes
 #include "third-party/TPCircularBuffer/TPCircularBuffer.h"
 
+// standard includes
+#include <atomic>
+#include <cstdint>
+
 NS_ASSUME_NONNULL_BEGIN
 
 // Forward declarations
@@ -27,6 +31,11 @@ NS_ASSUME_NONNULL_BEGIN
 @class CATapDescription;
 
 namespace platf {
+  extern std::atomic<std::uint64_t> audio_capture_produce_writes;
+  extern std::atomic<std::uint64_t> audio_capture_produce_drops;
+  extern std::atomic<std::uint64_t> audio_capture_silence_writes;
+  extern std::atomic<std::uint64_t> audio_capture_waits;
+
   OSStatus audioConverterComplexInputProc(AudioConverterRef _Nullable inAudioConverter, UInt32 *_Nonnull ioNumberDataPackets, AudioBufferList *_Nonnull ioData, AudioStreamPacketDescription *_Nullable *_Nullable outDataPacketDescription, void *_Nonnull inUserData);
   OSStatus systemAudioIOProc(AudioObjectID inDevice, const AudioTimeStamp *_Nullable inNow, const AudioBufferList *_Nullable inInputData, const AudioTimeStamp *_Nullable inInputTime, AudioBufferList *_Nullable outOutputData, const AudioTimeStamp *_Nullable inOutputTime, void *_Nullable inClientData);
 }  // namespace platf

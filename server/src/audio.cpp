@@ -3,6 +3,7 @@
  * @brief Definitions for audio capture and encoding.
  */
 // standard includes
+#include <cmath>
 #include <thread>
 
 // lib includes
@@ -25,6 +26,7 @@ namespace audio {
   static int start_audio_control(audio_ctx_t &ctx);
   static void stop_audio_control(audio_ctx_t &);
   static void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params);
+  static void sanitize_samples(std::vector<float> &sample);
 
   int map_stream(int channels, bool quality);
 
@@ -113,6 +115,8 @@ namespace audio {
 
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;
     while (auto sample = samples->pop()) {
+      sanitize_samples(*sample);
+
       buffer_t packet {1400};
 
       int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
@@ -125,6 +129,18 @@ namespace audio {
 
       packet.fake_resize(bytes);
       packets->raise(channel_data, std::move(packet));
+    }
+  }
+
+  void sanitize_samples(std::vector<float> &sample) {
+    for (auto &value : sample) {
+      if (!std::isfinite(value)) {
+        value = 0.0f;
+      } else if (value > 1.0f) {
+        value = 1.0f;
+      } else if (value < -1.0f) {
+        value = -1.0f;
+      }
     }
   }
 

@@ -174,6 +174,41 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var streamExitShortcutKeyCode: Int {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var streamExitShortcutModifierMask: UInt {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var streamExitShortcutDisplay: String {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseClientAuthoritativeCursor: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseEventDrivenPosition: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseIdleHostCorrection: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
+    @Published var parsecMouseDeltaAccumulatedVisibleCursor: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
 
     @Published var emulateGuide: Bool {
         didSet {
@@ -312,6 +347,13 @@ class SettingsModel: ObservableObject {
     static var defaultParsecMouseShortcutIndex: Int {
         getInt(from: defaultParsecMouseShortcut, in: parsecMouseShortcutOptions)
     }
+    static let defaultStreamExitShortcut = "Command + Q"
+    static let defaultStreamExitShortcutKeyCode = 12
+    static let defaultStreamExitShortcutModifierMask = NSEvent.ModifierFlags.command.rawValue
+    static let defaultParsecMouseClientAuthoritativeCursor = true
+    static let defaultParsecMouseEventDrivenPosition = true
+    static let defaultParsecMouseIdleHostCorrection = true
+    static let defaultParsecMouseDeltaAccumulatedVisibleCursor = true
     static let defaultEmulateGuide = false
     static let defaultWindowsCtrlSource = "Control"
     static let defaultWindowsShiftSource = "Shift"
@@ -460,6 +502,13 @@ class SettingsModel: ObservableObject {
         parsecMouseShortcutKeyCode = Self.defaultParsecMouseShortcutKeyCode
         parsecMouseShortcutModifierMask = Self.defaultParsecMouseShortcutModifierMask
         parsecMouseShortcutDisplay = Self.defaultParsecMouseShortcut
+        streamExitShortcutKeyCode = Self.defaultStreamExitShortcutKeyCode
+        streamExitShortcutModifierMask = Self.defaultStreamExitShortcutModifierMask
+        streamExitShortcutDisplay = Self.defaultStreamExitShortcut
+        parsecMouseClientAuthoritativeCursor = Self.defaultParsecMouseClientAuthoritativeCursor
+        parsecMouseEventDrivenPosition = Self.defaultParsecMouseEventDrivenPosition
+        parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
+        parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -502,6 +551,13 @@ class SettingsModel: ObservableObject {
         parsecMouseShortcutKeyCode = Self.defaultParsecMouseShortcutKeyCode
         parsecMouseShortcutModifierMask = Self.defaultParsecMouseShortcutModifierMask
         parsecMouseShortcutDisplay = Self.defaultParsecMouseShortcut
+        streamExitShortcutKeyCode = Self.defaultStreamExitShortcutKeyCode
+        streamExitShortcutModifierMask = Self.defaultStreamExitShortcutModifierMask
+        streamExitShortcutDisplay = Self.defaultStreamExitShortcut
+        parsecMouseClientAuthoritativeCursor = Self.defaultParsecMouseClientAuthoritativeCursor
+        parsecMouseEventDrivenPosition = Self.defaultParsecMouseEventDrivenPosition
+        parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
+        parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
         
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
@@ -572,6 +628,13 @@ class SettingsModel: ObservableObject {
                 parsecMouseShortcutKeyCode = settings.parsecMouseShortcutKeyCode ?? Self.keyCode(forParsecMouseShortcutIndex: legacyShortcutIndex)
                 parsecMouseShortcutModifierMask = settings.parsecMouseShortcutModifierMask ?? Self.modifierMask(forParsecMouseShortcutIndex: legacyShortcutIndex)
                 parsecMouseShortcutDisplay = settings.parsecMouseShortcutDisplay ?? Self.displayString(keyCode: parsecMouseShortcutKeyCode, modifierMask: parsecMouseShortcutModifierMask)
+                streamExitShortcutKeyCode = settings.streamExitShortcutKeyCode ?? Self.defaultStreamExitShortcutKeyCode
+                streamExitShortcutModifierMask = settings.streamExitShortcutModifierMask ?? Self.defaultStreamExitShortcutModifierMask
+                streamExitShortcutDisplay = settings.streamExitShortcutDisplay ?? Self.displayString(keyCode: streamExitShortcutKeyCode, modifierMask: streamExitShortcutModifierMask)
+                parsecMouseClientAuthoritativeCursor = settings.parsecMouseClientAuthoritativeCursor ?? Self.defaultParsecMouseClientAuthoritativeCursor
+                parsecMouseEventDrivenPosition = settings.parsecMouseEventDrivenPosition ?? Self.defaultParsecMouseEventDrivenPosition
+                parsecMouseIdleHostCorrection = settings.parsecMouseIdleHostCorrection ?? Self.defaultParsecMouseIdleHostCorrection
+                parsecMouseDeltaAccumulatedVisibleCursor = settings.parsecMouseDeltaAccumulatedVisibleCursor ?? Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
                 
                 emulateGuide = settings.emulateGuide
                 selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
@@ -672,6 +735,13 @@ class SettingsModel: ObservableObject {
             parsecMouseShortcutKeyCode: parsecMouseShortcutKeyCode,
             parsecMouseShortcutModifierMask: parsecMouseShortcutModifierMask,
             parsecMouseShortcutDisplay: parsecMouseShortcutDisplay,
+            streamExitShortcutKeyCode: streamExitShortcutKeyCode,
+            streamExitShortcutModifierMask: streamExitShortcutModifierMask,
+            streamExitShortcutDisplay: streamExitShortcutDisplay,
+            parsecMouseClientAuthoritativeCursor: parsecMouseClientAuthoritativeCursor,
+            parsecMouseEventDrivenPosition: parsecMouseEventDrivenPosition,
+            parsecMouseIdleHostCorrection: parsecMouseIdleHostCorrection,
+            parsecMouseDeltaAccumulatedVisibleCursor: parsecMouseDeltaAccumulatedVisibleCursor,
             emulateGuide: emulateGuide,
             windowsCtrlSource: windowsCtrlSource,
             windowsShiftSource: windowsShiftSource,

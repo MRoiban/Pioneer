@@ -531,7 +531,10 @@ SwitchCommonOutputPacket_t switchRumblePacket;
     }
     
     mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput * _Nonnull mouse, float deltaX, float deltaY) {
-        if (self.shouldSendInputEvents) {
+        if (self.localMouseDeltaHandler != nil) {
+            self.localMouseDeltaHandler(deltaX, -deltaY);
+        }
+        if (self.shouldSendInputEvents && !self.suppressRelativeMouseEvents) {
             [self queueMouseDeltaX:deltaX y:-deltaY];
         }
     };
@@ -632,7 +635,7 @@ SwitchCommonOutputPacket_t switchRumblePacket;
 
 static void rawMouseHIDCallback(void *context, IOReturn result, void *sender, IOHIDValueRef value) {
     HIDSupport *support = (__bridge HIDSupport *)context;
-    if (support == nil || !support.useRawHIDMouse || !support.shouldSendInputEvents) {
+    if (support == nil || !support.useRawHIDMouse) {
         return;
     }
 
@@ -648,10 +651,20 @@ static void rawMouseHIDCallback(void *context, IOReturn result, void *sender, IO
     }
 
     if (usage == kHIDUsage_GD_X) {
-        [support queueMouseDeltaX:(double)delta y:0];
+        if (support.localMouseDeltaHandler != nil) {
+            support.localMouseDeltaHandler((double)delta, 0);
+        }
+        if (support.shouldSendInputEvents && !support.suppressRelativeMouseEvents) {
+            [support queueMouseDeltaX:(double)delta y:0];
+        }
     }
     else if (usage == kHIDUsage_GD_Y) {
-        [support queueMouseDeltaX:0 y:(double)delta];
+        if (support.localMouseDeltaHandler != nil) {
+            support.localMouseDeltaHandler(0, (double)delta);
+        }
+        if (support.shouldSendInputEvents && !support.suppressRelativeMouseEvents) {
+            [support queueMouseDeltaX:0 y:(double)delta];
+        }
     }
 }
 
@@ -773,7 +786,7 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     if (deltaX != 0 || deltaY != 0) {
         me.mouseDeltaX = 0;
         me.mouseDeltaY = 0;
-        if (me.shouldSendInputEvents) {
+        if (me.shouldSendInputEvents && !me.suppressRelativeMouseEvents) {
             LiSendMouseMoveEvent(deltaX, deltaY);
         }
     }
@@ -967,7 +980,10 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     }
     
     if (event.deltaX != 0 || event.deltaY != 0) {
-        if (self.shouldSendInputEvents) {
+        if (self.localMouseDeltaHandler != nil) {
+            self.localMouseDeltaHandler(event.deltaX, event.deltaY);
+        }
+        if (self.shouldSendInputEvents && !self.suppressRelativeMouseEvents) {
             [self queueMouseDeltaX:event.deltaX y:event.deltaY];
         }
     }

@@ -11,9 +11,11 @@
 
 @interface HIDSupport : NSObject
 @property (atomic) BOOL shouldSendInputEvents;
+@property (atomic) BOOL suppressRelativeMouseEvents;
 @property (atomic) TemporaryHost *host;
 @property (nonatomic, readonly) BOOL rawHIDMouseActive;
 @property (nonatomic, readonly) BOOL rawHIDMouseRequested;
+@property (nonatomic, copy) void (^localMouseDeltaHandler)(double deltaX, double deltaY);
 
 - (instancetype)init:(TemporaryHost *)host;
 

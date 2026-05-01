@@ -21,6 +21,29 @@
 namespace platf {
   using namespace std::literals;
 
+  std::atomic<std::uint64_t> audio_capture_produce_writes {};
+  std::atomic<std::uint64_t> audio_capture_produce_drops {};
+  std::atomic<std::uint64_t> audio_capture_silence_writes {};
+  std::atomic<std::uint64_t> audio_capture_waits {};
+
+  constexpr UInt32 audio_ring_buffer_packets = 24;
+  constexpr UInt32 audio_packet_frames = 240;
+
+  bool produceAudioBytes(AVAudio *avAudio, const void *data, UInt32 byteSize) {
+    if (!data || byteSize == 0) {
+      return false;
+    }
+
+    bool produced = TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, data, byteSize);
+    if (produced) {
+      audio_capture_produce_writes.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      audio_capture_produce_drops.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    return produced;
+  }
+
   /**
    * @brief Real-time AudioConverter input callback for format conversion.
    * Provides audio data to AudioConverter during format conversion process using pure C++ for optimal performance.
@@ -121,22 +144,19 @@ namespace platf {
           if (converterStatus == noErr && outputFrameCount > 0) {
             // AudioConverter did all the work: sample rate + channels + optimal frame count
             UInt32 actualOutputBytes = outputFrameCount * clientChannels * sizeof(float);
-            TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, procData->conversionBuffer, actualOutputBytes);
-            didWriteData = true;
+            didWriteData = produceAudioBytes(avAudio, procData->conversionBuffer, actualOutputBytes);
           } else {
             // Fallback: write original data
-            TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
-            didWriteData = true;
+            didWriteData = produceAudioBytes(avAudio, inputBuffer.mData, inputBuffer.mDataByteSize);
           }
         } else {
           // No conversion needed - direct passthrough
-          TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
-          didWriteData = true;
+          didWriteData = produceAudioBytes(avAudio, inputBuffer.mData, inputBuffer.mDataByteSize);
         }
       }
     }
 
-    // Always signal, even if we didn't write data (ensures consumer doesn't block)
+    // If the input was empty, write silence so the consumer can keep cadence.
     if (!didWriteData) {
       // Write silence if no valid input data - use pre-allocated buffer or small stack buffer
       UInt32 silenceFrames = clientFrameSize > 0 ? std::min(clientFrameSize, 2048U) : 512U;
@@ -149,7 +169,10 @@ namespace platf {
 
         // Creating actual silence
         memset(procData->conversionBuffer, 0, silenceBytes);
-        TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, procData->conversionBuffer, silenceBytes);
+        didWriteData = produceAudioBytes(avAudio, procData->conversionBuffer, silenceBytes);
+        if (didWriteData) {
+          audio_capture_silence_writes.fetch_add(1, std::memory_order_relaxed);
+        }
       } else {
         // Fallback to small stack-allocated buffer for cases without conversion buffer
         float silenceBuffer[512 * 8] = {0};  // Max 512 frames, 8 channels on stack
@@ -157,13 +180,18 @@ namespace platf {
         silenceFrames = std::min(silenceFrames, maxStackFrames);
         UInt32 silenceBytes = silenceFrames * clientChannels * sizeof(float);
 
-        TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, silenceBuffer, silenceBytes);
+        didWriteData = produceAudioBytes(avAudio, silenceBuffer, silenceBytes);
+        if (didWriteData) {
+          audio_capture_silence_writes.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
 
-    // Signal new data arrival - using real-time safe C-based semaphore
-    // instead of Objective-C NSCondition to meet real-time audio constraints
-    dispatch_semaphore_signal(avAudio->audioSemaphore);
+    if (didWriteData) {
+      // Signal new data arrival - using real-time safe C-based semaphore
+      // instead of Objective-C NSCondition to meet real-time audio constraints
+      dispatch_semaphore_signal(avAudio->audioSemaphore);
+    }
 
     return noErr;
   }
@@ -333,8 +361,9 @@ namespace platf {
     // and we don't want to do sanity checks in a performance critical exec path
     AudioBuffer audioBuffer = audioBufferList.mBuffers[0];
 
-    TPCircularBufferProduceBytes(&self->audioSampleBuffer, audioBuffer.mData, audioBuffer.mDataByteSize);
-    dispatch_semaphore_signal(self->audioSemaphore);
+    if (platf::produceAudioBytes(self, audioBuffer.mData, audioBuffer.mDataByteSize)) {
+      dispatch_semaphore_signal(self->audioSemaphore);
+    }
   }
 }
 
@@ -481,8 +510,8 @@ namespace platf {
   // Cleanup any existing circular buffer first
   TPCircularBufferCleanup(&self->audioSampleBuffer);
 
-  // Size the buffer to hold 30ms of audio (6 packets of 240 32-bit samples per channel)
-  int ringBufferSize = 6 * 240 * channels * sizeof(float);
+  // Size the buffer to hold about 120ms of audio at 48 kHz.
+  int ringBufferSize = platf::audio_ring_buffer_packets * platf::audio_packet_frames * channels * sizeof(float);
 
   // Initialize the circular buffer with proper size for the channel count
   TPCircularBufferInit(&self->audioSampleBuffer, ringBufferSize);

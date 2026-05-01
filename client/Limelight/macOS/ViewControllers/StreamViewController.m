@@ -50,10 +50,18 @@
 @property (nonatomic) BOOL parsecManualMouseOverride;
 @property (nonatomic) NSInteger parsecMouseShortcutKeyCode;
 @property (nonatomic) NSUInteger parsecMouseShortcutModifierFlags;
+@property (nonatomic) NSInteger streamExitShortcutKeyCode;
+@property (nonatomic) NSUInteger streamExitShortcutModifierFlags;
+@property (nonatomic) BOOL parsecMouseClientAuthoritativeCursor;
+@property (nonatomic) BOOL parsecMouseEventDrivenPosition;
+@property (nonatomic) BOOL parsecMouseIdleHostCorrection;
+@property (nonatomic) BOOL parsecMouseDeltaAccumulatedVisibleCursor;
 @property (nonatomic) BOOL parsecCursorFeedbackReceived;
 @property (nonatomic) BOOL parsecCursorImageReceived;
 @property (nonatomic) CFAbsoluteTime parsecLastLocalMoveTime;
 @property (nonatomic) NSPoint parsecLastLocalCursorPoint;
+@property (nonatomic) NSPoint parsecLocalDisplayCursorPoint;
+@property (nonatomic) BOOL parsecLocalDisplayCursorValid;
 @property (nonatomic) CVDisplayLinkRef parsecCursorDisplayLink;
 @property (nonatomic) dispatch_queue_t parsecPositionQueue;
 @property (nonatomic) dispatch_source_t parsecPositionTimer;
@@ -214,6 +222,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     if (!self.parsecMouseMode || self.parsecRelativeMouseMode || !self.hidSupport.shouldSendInputEvents) {
         return;
     }
+    if (self.parsecMouseClientAuthoritativeCursor && self.parsecMouseDeltaAccumulatedVisibleCursor) {
+        return;
+    }
     NSWindow *window = self.view.window;
     if (window == nil) {
         return;
@@ -270,6 +281,70 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     self.parsecLastSentY = y;
     LiSendMousePositionEvent(x, y, referenceWidth, referenceHeight);
     return YES;
+}
+
+- (NSPoint)clampedParsecViewPoint:(NSPoint)viewPoint {
+    CGFloat width = MAX(1, self.parsecViewWidth);
+    CGFloat height = MAX(1, self.parsecViewHeight);
+
+    return NSMakePoint(MAX(0, MIN(width, viewPoint.x)),
+                       MAX(0, MIN(height, viewPoint.y)));
+}
+
+- (void)moveLocalParsecCursorWithEvent:(NSEvent *)event absoluteViewPoint:(NSPoint)absoluteViewPoint {
+    NSPoint nextPoint;
+
+    if (!self.parsecMouseDeltaAccumulatedVisibleCursor || !self.parsecLocalDisplayCursorValid) {
+        nextPoint = absoluteViewPoint;
+        self.parsecLocalDisplayCursorValid = YES;
+    } else {
+        nextPoint = self.parsecLocalDisplayCursorPoint;
+        nextPoint.x += event.deltaX;
+        nextPoint.y += event.deltaY;
+    }
+
+    nextPoint = [self clampedParsecViewPoint:nextPoint];
+
+    self.parsecLocalDisplayCursorPoint = nextPoint;
+    self.parsecLastLocalCursorPoint = nextPoint;
+    self.parsecLastLocalMoveTime = CFAbsoluteTimeGetCurrent();
+    [self.streamView moveHostCursorToPoint:nextPoint];
+}
+
+- (void)moveLocalParsecCursorWithDeltaX:(double)deltaX deltaY:(double)deltaY {
+    if (!self.parsecMouseMode || self.parsecRelativeMouseMode || !self.hidSupport.shouldSendInputEvents ||
+        !self.parsecMouseClientAuthoritativeCursor || !self.parsecMouseDeltaAccumulatedVisibleCursor) {
+        return;
+    }
+
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self moveLocalParsecCursorWithDeltaX:deltaX deltaY:deltaY];
+        });
+        return;
+    }
+
+    [self updateParsecViewMetrics];
+
+    NSPoint nextPoint;
+    if (!self.parsecLocalDisplayCursorValid) {
+        NSWindow *window = self.view.window;
+        NSPoint windowPoint = window != nil ? window.mouseLocationOutsideOfEventStream : NSZeroPoint;
+        nextPoint = [self.view convertPoint:windowPoint fromView:nil];
+        self.parsecLocalDisplayCursorValid = YES;
+    } else {
+        nextPoint = self.parsecLocalDisplayCursorPoint;
+    }
+
+    nextPoint.x += deltaX;
+    nextPoint.y += deltaY;
+    nextPoint = [self clampedParsecViewPoint:nextPoint];
+
+    self.parsecLocalDisplayCursorPoint = nextPoint;
+    self.parsecLastLocalCursorPoint = nextPoint;
+    self.parsecLastLocalMoveTime = CFAbsoluteTimeGetCurrent();
+
+    [self.streamView moveHostCursorToPoint:nextPoint];
 }
 
 - (void)startParsecPositionSender {
@@ -330,6 +405,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
 }
 
 - (void)keyDown:(NSEvent *)event {
+    if ([self handleStreamExitHotkey:event]) {
+        return;
+    }
     if ([self handleParsecMouseOverrideHotkey:event]) {
         return;
     }
@@ -437,6 +515,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     const NSEventModifierFlags modifierFlags = NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
     const NSEventModifierFlags eventModifierFlags = event.modifierFlags & modifierFlags;
 
+    if ([self handleStreamExitHotkey:event]) {
+        return YES;
+    }
     if ([self handleParsecMouseOverrideHotkey:event]) {
         return YES;
     }
@@ -570,6 +651,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     [self disallowDisplaySleep];
     
     self.hidSupport.shouldSendInputEvents = YES;
+    self.hidSupport.suppressRelativeMouseEvents = NO;
     self.controllerSupport.shouldSendInputEvents = YES;
     self.view.window.acceptsMouseMovedEvents = YES;
 }
@@ -586,6 +668,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     [self disallowDisplaySleep];
 
     self.hidSupport.shouldSendInputEvents = YES;
+    self.hidSupport.suppressRelativeMouseEvents = YES;
     self.controllerSupport.shouldSendInputEvents = YES;
     self.view.window.acceptsMouseMovedEvents = YES;
     [self updateParsecViewMetrics];
@@ -605,6 +688,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     [self allowDisplaySleep];
 
     self.hidSupport.shouldSendInputEvents = NO;
+    self.hidSupport.suppressRelativeMouseEvents = NO;
     self.controllerSupport.shouldSendInputEvents = NO;
     self.view.window.acceptsMouseMovedEvents = NO;
     [self.streamView setHostCursorVisible:NO];
@@ -616,9 +700,17 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     if (!self.parsecMouseMode || self.parsecRelativeMouseMode || !self.hidSupport.shouldSendInputEvents) {
         return NO;
     }
+
     [self updateParsecViewMetrics];
-    NSPoint viewPoint = [self.view convertPoint:event.locationInWindow fromView:nil];
-    [self sendParsecPositionAtViewPoint:viewPoint];
+    NSPoint absoluteViewPoint = [self.view convertPoint:event.locationInWindow fromView:nil];
+
+    if (self.parsecMouseEventDrivenPosition) {
+        [self sendParsecPositionAtViewPoint:absoluteViewPoint];
+    }
+    if (self.parsecMouseClientAuthoritativeCursor) {
+        [self moveLocalParsecCursorWithEvent:event absoluteViewPoint:absoluteViewPoint];
+    }
+
     return YES;
 }
 
@@ -647,6 +739,22 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     [self.hidSupport releaseAllModifierKeys];
     self.parsecManualMouseOverride = YES;
     [self setParsecRelativeMouseMode:!self.parsecRelativeMouseMode];
+    return YES;
+}
+
+- (BOOL)handleStreamExitHotkey:(NSEvent *)event {
+    if (event.type != NSEventTypeKeyDown) {
+        return NO;
+    }
+
+    const NSEventModifierFlags modifierFlags = NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
+    const NSEventModifierFlags eventModifierFlags = event.modifierFlags & modifierFlags;
+    if (event.keyCode != self.streamExitShortcutKeyCode || eventModifierFlags != self.streamExitShortcutModifierFlags) {
+        return NO;
+    }
+
+    [self.hidSupport releaseAllModifierKeys];
+    [self performCloseStreamWindow:self];
     return YES;
 }
 
@@ -878,6 +986,10 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         }
     }
     self.hidSupport = [[HIDSupport alloc] init:self.app.host];
+    __weak typeof(self) weakSelf = self;
+    self.hidSupport.localMouseDeltaHandler = ^(double deltaX, double deltaY) {
+        [weakSelf moveLocalParsecCursorWithDeltaX:deltaX deltaY:deltaY];
+    };
     self.parsecMouseMode = streamConfig.cursorFeedback;
     self.parsecRelativeMouseMode = !self.parsecMouseMode;
     self.parsecManualMouseOverride = NO;
@@ -885,6 +997,16 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     self.parsecCursorImageReceived = NO;
     self.parsecMouseShortcutKeyCode = [SettingsClass parsecMouseShortcutKeyCodeFor:self.app.host.uuid];
     self.parsecMouseShortcutModifierFlags = [SettingsClass parsecMouseShortcutModifierFlagsFor:self.app.host.uuid];
+    self.streamExitShortcutKeyCode = [SettingsClass streamExitShortcutKeyCodeFor:self.app.host.uuid];
+    self.streamExitShortcutModifierFlags = [SettingsClass streamExitShortcutModifierFlagsFor:self.app.host.uuid];
+    self.parsecMouseClientAuthoritativeCursor = [SettingsClass parsecMouseClientAuthoritativeCursorFor:self.app.host.uuid];
+    self.parsecMouseEventDrivenPosition = [SettingsClass parsecMouseEventDrivenPositionFor:self.app.host.uuid];
+    self.parsecMouseIdleHostCorrection = [SettingsClass parsecMouseIdleHostCorrectionFor:self.app.host.uuid];
+    self.parsecMouseDeltaAccumulatedVisibleCursor = [SettingsClass parsecMouseDeltaAccumulatedVisibleCursorFor:self.app.host.uuid];
+    self.parsecLocalDisplayCursorValid = NO;
+    self.parsecLocalDisplayCursorPoint = NSZeroPoint;
+    self.parsecLastLocalCursorPoint = NSZeroPoint;
+    self.parsecLastLocalMoveTime = 0;
     Log(LOG_I, @"Parsec Mouse Mode %@ for host %@. Shortcut keyCode=%ld modifiers=0x%lx",
         self.parsecMouseMode ? @"enabled" : @"disabled",
         self.app.host.name,
@@ -1024,9 +1146,28 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
             }
         }
         CFAbsoluteTime nowTime = CFAbsoluteTimeGetCurrent();
-        BOOL recentLocalMove = (nowTime - self.parsecLastLocalMoveTime) < 0.1;
+        BOOL recentLocalMove = (nowTime - self.parsecLastLocalMoveTime) < 0.35;
         if (displayedRelativeMode) {
+            self.parsecLocalDisplayCursorValid = YES;
+            self.parsecLocalDisplayCursorPoint = hostCursorPoint;
+            self.parsecLastLocalCursorPoint = hostCursorPoint;
             [self.streamView moveHostCursorToPoint:hostCursorPoint];
+        } else if (self.parsecMouseClientAuthoritativeCursor) {
+            NSPoint localDisplayPoint = self.parsecLocalDisplayCursorValid ? self.parsecLocalDisplayCursorPoint : self.parsecLastLocalCursorPoint;
+            CGFloat dx = hostCursorPoint.x - localDisplayPoint.x;
+            CGFloat dy = hostCursorPoint.y - localDisplayPoint.y;
+            CGFloat err = sqrt(dx * dx + dy * dy);
+            if (!recentLocalMove && self.parsecMouseIdleHostCorrection && err > 0.5) {
+                self.parsecLocalDisplayCursorValid = YES;
+                self.parsecLocalDisplayCursorPoint = hostCursorPoint;
+                self.parsecLastLocalCursorPoint = hostCursorPoint;
+                [self.streamView moveHostCursorToPoint:hostCursorPoint];
+            } else if (err > 200.0) {
+                self.parsecLocalDisplayCursorValid = YES;
+                self.parsecLocalDisplayCursorPoint = hostCursorPoint;
+                self.parsecLastLocalCursorPoint = hostCursorPoint;
+                [self.streamView moveHostCursorToPoint:hostCursorPoint];
+            }
         } else {
             CGFloat dx = hostCursorPoint.x - self.parsecLastLocalCursorPoint.x;
             CGFloat dy = hostCursorPoint.y - self.parsecLastLocalCursorPoint.y;

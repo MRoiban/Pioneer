@@ -8,8 +8,50 @@
 #include "src/platform/common.h"
 #include "src/platform/macos/av_audio.h"
 
+// standard includes
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+
 namespace platf {
   using namespace std::literals;
+
+  void log_audio_capture_diagnostics() {
+    static auto last_log_time = std::chrono::steady_clock::now();
+
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_log_time < 5s) {
+      return;
+    }
+    last_log_time = now;
+
+    auto writes = audio_capture_produce_writes.exchange(0, std::memory_order_relaxed);
+    auto drops = audio_capture_produce_drops.exchange(0, std::memory_order_relaxed);
+    auto silence = audio_capture_silence_writes.exchange(0, std::memory_order_relaxed);
+    auto waits = audio_capture_waits.exchange(0, std::memory_order_relaxed);
+
+    BOOST_LOG(info) << "Audio capture diagnostics: writes="sv
+                    << writes
+                    << " drops="sv
+                    << drops
+                    << " silence="sv
+                    << silence
+                    << " waits="sv
+                    << waits;
+
+    if (auto *file = std::fopen("/tmp/moonlight_audio_diagnostics.log", "a")) {
+      std::fprintf(
+        file,
+        "%lld Audio capture diagnostics: writes=%llu drops=%llu silence=%llu waits=%llu\n",
+        static_cast<long long>(std::time(nullptr)),
+        static_cast<unsigned long long>(writes),
+        static_cast<unsigned long long>(drops),
+        static_cast<unsigned long long>(silence),
+        static_cast<unsigned long long>(waits)
+      );
+      std::fclose(file);
+    }
+  }
 
   struct av_mic_t: public mic_t {
     AVAudio *av_audio_capture {};
@@ -29,6 +71,8 @@ namespace platf {
         void *tail = TPCircularBufferTail(&av_audio_capture->audioSampleBuffer, &avail);
 
         if (avail == 0) {
+          audio_capture_waits.fetch_add(1, std::memory_order_relaxed);
+
           // Using 5 second timeout to prevent indefinite hanging
           dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5LL * NSEC_PER_SEC);
           if (dispatch_semaphore_wait(av_audio_capture->audioSemaphore, timeout) != 0) {
@@ -36,6 +80,7 @@ namespace platf {
 
             // Fill with silence and return to prevent hanging
             std::fill(sample_in.begin(), sample_in.end(), 0.0f);
+            log_audio_capture_diagnostics();
             return capture_e::timeout;
           }
           continue;
@@ -50,6 +95,7 @@ namespace platf {
         remaining -= toCopy;
       }
 
+      log_audio_capture_diagnostics();
       return capture_e::ok;
     }
   };

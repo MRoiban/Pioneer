@@ -33,6 +33,13 @@ struct Settings: Encodable, Decodable {
     let parsecMouseShortcutKeyCode: Int?
     let parsecMouseShortcutModifierMask: UInt?
     let parsecMouseShortcutDisplay: String?
+    let streamExitShortcutKeyCode: Int?
+    let streamExitShortcutModifierMask: UInt?
+    let streamExitShortcutDisplay: String?
+    let parsecMouseClientAuthoritativeCursor: Bool?
+    let parsecMouseEventDrivenPosition: Bool?
+    let parsecMouseIdleHostCorrection: Bool?
+    let parsecMouseDeltaAccumulatedVisibleCursor: Bool?
     
     let emulateGuide: Bool
     let windowsCtrlSource: Int?
@@ -87,6 +94,13 @@ class SettingsClass: NSObject {
                     "parsecMouseShortcutKeyCode": settings.parsecMouseShortcutKeyCode ?? SettingsModel.defaultParsecMouseShortcutKeyCode,
                     "parsecMouseShortcutModifierMask": settings.parsecMouseShortcutModifierMask ?? SettingsModel.defaultParsecMouseShortcutModifierMask,
                     "parsecMouseShortcutDisplay": settings.parsecMouseShortcutDisplay ?? SettingsModel.defaultParsecMouseShortcut,
+                    "streamExitShortcutKeyCode": settings.streamExitShortcutKeyCode ?? SettingsModel.defaultStreamExitShortcutKeyCode,
+                    "streamExitShortcutModifierMask": settings.streamExitShortcutModifierMask ?? SettingsModel.defaultStreamExitShortcutModifierMask,
+                    "streamExitShortcutDisplay": settings.streamExitShortcutDisplay ?? SettingsModel.defaultStreamExitShortcut,
+                    "parsecMouseClientAuthoritativeCursor": settings.parsecMouseClientAuthoritativeCursor ?? SettingsModel.defaultParsecMouseClientAuthoritativeCursor,
+                    "parsecMouseEventDrivenPosition": settings.parsecMouseEventDrivenPosition ?? SettingsModel.defaultParsecMouseEventDrivenPosition,
+                    "parsecMouseIdleHostCorrection": settings.parsecMouseIdleHostCorrection ?? SettingsModel.defaultParsecMouseIdleHostCorrection,
+                    "parsecMouseDeltaAccumulatedVisibleCursor": settings.parsecMouseDeltaAccumulatedVisibleCursor ?? SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor,
                     "emulateGuide": settings.emulateGuide,
                     "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
                     "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
@@ -229,7 +243,55 @@ class SettingsClass: NSObject {
 
         return SettingsModel.defaultParsecMouseShortcutIndex
     }
-    
+
+    @objc static func streamExitShortcutKeyCode(for key: String) -> Int {
+        if let settings = Settings.getSettings(for: key), let keyCode = settings.streamExitShortcutKeyCode {
+            return keyCode
+        }
+
+        return SettingsModel.defaultStreamExitShortcutKeyCode
+    }
+
+    @objc static func streamExitShortcutModifierFlags(for key: String) -> UInt {
+        if let settings = Settings.getSettings(for: key), let modifierMask = settings.streamExitShortcutModifierMask {
+            return modifierMask
+        }
+
+        return SettingsModel.defaultStreamExitShortcutModifierMask
+    }
+
+    @objc static func parsecMouseClientAuthoritativeCursor(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseClientAuthoritativeCursor ?? SettingsModel.defaultParsecMouseClientAuthoritativeCursor
+        }
+
+        return SettingsModel.defaultParsecMouseClientAuthoritativeCursor
+    }
+
+    @objc static func parsecMouseEventDrivenPosition(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseEventDrivenPosition ?? SettingsModel.defaultParsecMouseEventDrivenPosition
+        }
+
+        return SettingsModel.defaultParsecMouseEventDrivenPosition
+    }
+
+    @objc static func parsecMouseIdleHostCorrection(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseIdleHostCorrection ?? SettingsModel.defaultParsecMouseIdleHostCorrection
+        }
+
+        return SettingsModel.defaultParsecMouseIdleHostCorrection
+    }
+
+    @objc static func parsecMouseDeltaAccumulatedVisibleCursor(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.parsecMouseDeltaAccumulatedVisibleCursor ?? SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor
+        }
+
+        return SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor
+    }
+
     @objc static func appArtworkDimensions(for key: String) -> CGSize {
         if let settings = Settings.getSettings(for: key) {
             if let dimensions = settings.appArtworkDimensions {

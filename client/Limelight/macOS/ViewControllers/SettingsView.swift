@@ -15,6 +15,9 @@ enum SettingsPaneType: Int, CaseIterable {
     case input
     case app
     case legacy
+#if DEBUG
+    case debug
+#endif
 
     var title: String {
         switch self {
@@ -29,6 +32,10 @@ enum SettingsPaneType: Int, CaseIterable {
             return "App"
         case .legacy:
             return "Legacy"
+#if DEBUG
+        case .debug:
+            return "Debug"
+#endif
         }
     }
     
@@ -44,6 +51,10 @@ enum SettingsPaneType: Int, CaseIterable {
             return "appclip"
         case .legacy:
             return "archivebox.fill"
+#if DEBUG
+        case .debug:
+            return "wrench.and.screwdriver.fill"
+#endif
         }
     }
     
@@ -59,6 +70,10 @@ enum SettingsPaneType: Int, CaseIterable {
             return .pink
         case .legacy:
             return Color(hex: 0x65B741)
+#if DEBUG
+        case .debug:
+            return .gray
+#endif
         }
     }
 }
@@ -140,6 +155,12 @@ struct Detail: View {
                 SettingPaneLoader(settingsModel) {
                     LegacyView()
                 }
+#if DEBUG
+            case .debug:
+                SettingPaneLoader(settingsModel) {
+                    DebugView()
+                }
+#endif
             }
         }
         .environmentObject(settingsModel)
@@ -488,6 +509,10 @@ struct InputView: View {
                     Divider()
 
                     ParsecMouseShortcutCell()
+
+                    Divider()
+
+                    StreamExitShortcutCell()
                 }
             }
             .padding()
@@ -520,6 +545,47 @@ struct ParsecMouseShortcutCell: View {
                             settingsModel.parsecMouseShortcutKeyCode = keyCode
                             settingsModel.parsecMouseShortcutModifierMask = modifierMask
                             settingsModel.parsecMouseShortcutDisplay = SettingsModel.displayString(
+                                keyCode: keyCode,
+                                modifierMask: modifierMask
+                            )
+                            isRecording = false
+                        },
+                        onCancel: {
+                            isRecording = false
+                        }
+                    )
+                    .frame(width: 0, height: 0)
+                }
+            })
+        })
+    }
+}
+
+struct StreamExitShortcutCell: View {
+    @EnvironmentObject private var settingsModel: SettingsModel
+    @SwiftUI.State private var isRecording = false
+
+    var body: some View {
+        FormCell(title: "Exit Stream Shortcut", contentWidth: 260, content: {
+            HStack(spacing: 8) {
+                Text(isRecording ? "Hold shortcut keys..." : settingsModel.streamExitShortcutDisplay)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(isRecording ? "Cancel" : "Register New") {
+                    isRecording.toggle()
+                }
+                .buttonStyle(.bordered)
+            }
+            .background(Group {
+                if isRecording {
+                    ShortcutCaptureView(
+                        onComplete: { keyCode, modifierMask in
+                            settingsModel.streamExitShortcutKeyCode = keyCode
+                            settingsModel.streamExitShortcutModifierMask = modifierMask
+                            settingsModel.streamExitShortcutDisplay = SettingsModel.displayString(
                                 keyCode: keyCode,
                                 modifierMask: modifierMask
                             )
@@ -715,6 +781,36 @@ struct LegacyView: View {
         }
     }
 }
+
+#if DEBUG
+struct DebugView: View {
+    @EnvironmentObject private var settingsModel: SettingsModel
+
+    var body: some View {
+        ScrollView {
+            VStack {
+                FormSection(title: "Parsec Mouse") {
+                    ToggleCell(title: "Client-Authoritative Cursor", boolBinding: $settingsModel.parsecMouseClientAuthoritativeCursor)
+
+                    Divider()
+
+                    ToggleCell(title: "Event-Driven Position Sends", boolBinding: $settingsModel.parsecMouseEventDrivenPosition)
+
+                    Divider()
+
+                    ToggleCell(title: "Idle Host Position Correction", boolBinding: $settingsModel.parsecMouseIdleHostCorrection)
+
+                    Divider()
+
+                    ToggleCell(title: "Delta-Accumulated Visible Cursor", boolBinding: $settingsModel.parsecMouseDeltaAccumulatedVisibleCursor)
+                }
+
+            }
+            .padding()
+        }
+    }
+}
+#endif
 
 struct ToggleCell: View {
     let title: String

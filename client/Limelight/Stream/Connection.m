@@ -15,6 +15,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <VideoToolbox/VideoToolbox.h>
 
+#include <stdatomic.h>
+
 #include "Limelight.h"
 #include "opus_multistream.h"
 
@@ -61,12 +63,78 @@ static AudioQueueRef audioQueue;
 static AudioQueueBufferRef audioBuffers[AUDIO_QUEUE_BUFFERS];
 static VideoDecoderRenderer* renderer;
 
+static atomic_ullong audioDecodedPackets;
+static atomic_ullong audioDecodeErrors;
+static atomic_ullong audioRingDrops;
+static atomic_ullong audioOutputUnderruns;
+static atomic_ullong audioInvalidFrameCounts;
+static atomic_ullong audioClippedSamples;
+
+static int AudioQueuedBuffers(void)
+{
+    int queued = audioBufferWriteIndex - audioBufferReadIndex;
+    if (queued < 0) {
+        queued += audioBufferEntries;
+    }
+
+    return queued;
+}
+
+static void LogAudioDiagnosticsIfNeeded(void)
+{
+    static CFAbsoluteTime lastLogTime;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+    if (now - lastLogTime < 5.0) {
+        return;
+    }
+    lastLogTime = now;
+
+    unsigned long long decoded = atomic_exchange_explicit(&audioDecodedPackets, 0, memory_order_relaxed);
+    unsigned long long decodeErrors = atomic_exchange_explicit(&audioDecodeErrors, 0, memory_order_relaxed);
+    unsigned long long ringDrops = atomic_exchange_explicit(&audioRingDrops, 0, memory_order_relaxed);
+    unsigned long long outputUnderruns = atomic_exchange_explicit(&audioOutputUnderruns, 0, memory_order_relaxed);
+    unsigned long long invalidFrames = atomic_exchange_explicit(&audioInvalidFrameCounts, 0, memory_order_relaxed);
+    unsigned long long clipped = atomic_exchange_explicit(&audioClippedSamples, 0, memory_order_relaxed);
+    int queued = AudioQueuedBuffers();
+
+    Log(LOG_I, @"Audio client diagnostics: decoded=%llu decodeErrors=%llu ringDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d entries=%d volume=%.2f",
+        decoded,
+        decodeErrors,
+        ringDrops,
+        outputUnderruns,
+        invalidFrames,
+        clipped,
+        queued,
+        audioBufferEntries,
+        audioVolumeMultiplier);
+
+    FILE *file = fopen("/tmp/moonlight_audio_diagnostics.log", "a");
+    if (file != NULL) {
+        fprintf(file,
+                "%.3f Audio client diagnostics: decoded=%llu decodeErrors=%llu ringDrops=%llu outputUnderruns=%llu invalidFrames=%llu clipped=%llu queued=%d entries=%d volume=%.2f\n",
+                [[NSDate date] timeIntervalSince1970],
+                decoded,
+                decodeErrors,
+                ringDrops,
+                outputUnderruns,
+                invalidFrames,
+                clipped,
+                queued,
+                audioBufferEntries,
+                audioVolumeMultiplier);
+        fclose(file);
+    }
+}
+
 static short ClampAudioSample(float sample)
 {
     if (sample > 32767.0f) {
+        atomic_fetch_add_explicit(&audioClippedSamples, 1, memory_order_relaxed);
         return 32767;
     }
     else if (sample < -32768.0f) {
+        atomic_fetch_add_explicit(&audioClippedSamples, 1, memory_order_relaxed);
         return -32768;
     }
 
@@ -291,6 +359,8 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     // Check if there is space for this sample in the buffer. Again, this can race
     // but in the worst case, we'll not see the sample callback having consumed a sample.
     if (((audioBufferWriteIndex + 1) % audioBufferEntries) == audioBufferReadIndex) {
+        atomic_fetch_add_explicit(&audioRingDrops, 1, memory_order_relaxed);
+        LogAudioDiagnosticsIfNeeded();
         return;
     }
     
@@ -303,6 +373,7 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
             buffer[i] = ClampAudioSample(buffer[i] * audioVolumeMultiplier);
         }
         audioBufferFrameCounts[audioBufferWriteIndex] = decodeLen;
+        atomic_fetch_add_explicit(&audioDecodedPackets, 1, memory_order_relaxed);
         
         // Use a full memory barrier to ensure the circular buffer is written before incrementing the index
         __sync_synchronize();
@@ -312,6 +383,11 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         // we just won't consider this sample) or the new value of s_WriteIndex
         audioBufferWriteIndex = (audioBufferWriteIndex + 1) % audioBufferEntries;
     }
+    else {
+        atomic_fetch_add_explicit(&audioDecodeErrors, 1, memory_order_relaxed);
+    }
+
+    LogAudioDiagnosticsIfNeeded();
 }
 
 - (void)updateVolume {
@@ -529,6 +605,7 @@ static void FillOutputBuffer(void *aqData,
     if (audioBufferWriteIndex != audioBufferReadIndex) {
         framesToSubmit = audioBufferFrameCounts[audioBufferReadIndex];
         if (framesToSubmit <= 0 || framesToSubmit > audioMaxSamplesPerFrame) {
+            atomic_fetch_add_explicit(&audioInvalidFrameCounts, 1, memory_order_relaxed);
             framesToSubmit = audioSamplesPerFrame;
         }
         inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
@@ -549,10 +626,13 @@ static void FillOutputBuffer(void *aqData,
     }
     else {
         // No data, so play silence
+        atomic_fetch_add_explicit(&audioOutputUnderruns, 1, memory_order_relaxed);
         inBuffer->mAudioDataByteSize = framesToSubmit * channelCount * sizeof(short);
         assert(inBuffer->mAudioDataByteSize <= inBuffer->mAudioDataBytesCapacity);
         memset(inBuffer->mAudioData, 0, inBuffer->mAudioDataByteSize);
     }
+
+    LogAudioDiagnosticsIfNeeded();
     
     AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, NULL);
 }
