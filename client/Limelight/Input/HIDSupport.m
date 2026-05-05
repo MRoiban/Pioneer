@@ -495,9 +495,11 @@ SwitchCommonOutputPacket_t switchRumblePacket;
         [self rumbleSync];
 
         self.controller = [[Controller alloc] init];
-        self.mouseDeltaQueue = dispatch_queue_create("com.moonlight-stream.mouseDeltaQueue", DISPATCH_QUEUE_SERIAL);
-        [self startMouseDeltaSender];
-        [self setupRawMouseHidManagerIfNeeded];
+        if (self.lowLatencyMousePipeline) {
+            self.mouseDeltaQueue = dispatch_queue_create("com.moonlight-stream.mouseDeltaQueue", DISPATCH_QUEUE_SERIAL);
+            [self startMouseDeltaSender];
+            [self setupRawMouseHidManagerIfNeeded];
+        }
         
         for (GCMouse *mouse in GCMouse.mice) {
             [self registerMouseCallbacks:mouse];
@@ -535,7 +537,11 @@ SwitchCommonOutputPacket_t switchRumblePacket;
             self.localMouseDeltaHandler(deltaX, -deltaY);
         }
         if (self.shouldSendInputEvents && !self.suppressRelativeMouseEvents) {
-            [self queueMouseDeltaX:deltaX y:-deltaY];
+            if (self.mouseDeltaQueue != nil) {
+                [self queueMouseDeltaX:deltaX y:-deltaY];
+            } else {
+                LiSendMouseMoveEvent((int16_t)deltaX, (int16_t)(-deltaY));
+            }
         }
     };
     
@@ -574,9 +580,9 @@ SwitchCommonOutputPacket_t switchRumblePacket;
 
     self.mouseDeltaTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.mouseDeltaQueue);
     dispatch_source_set_timer(self.mouseDeltaTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC),
-                              NSEC_PER_MSEC,
-                              NSEC_PER_MSEC / 2);
+                              dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_MSEC),
+                              4 * NSEC_PER_MSEC,
+                              NSEC_PER_MSEC);
 
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.mouseDeltaTimer, ^{
@@ -978,13 +984,17 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     if (self.useGCMouse || self.useRawHIDMouse) {
         return;
     }
-    
+
     if (event.deltaX != 0 || event.deltaY != 0) {
         if (self.localMouseDeltaHandler != nil) {
             self.localMouseDeltaHandler(event.deltaX, event.deltaY);
         }
         if (self.shouldSendInputEvents && !self.suppressRelativeMouseEvents) {
-            [self queueMouseDeltaX:event.deltaX y:event.deltaY];
+            if (self.mouseDeltaQueue != nil) {
+                [self queueMouseDeltaX:event.deltaX y:event.deltaY];
+            } else {
+                LiSendMouseMoveEvent(event.deltaX, event.deltaY);
+            }
         }
     }
 }
@@ -1466,12 +1476,19 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
 }
 
 - (BOOL)wantsRawHIDMouse {
+    if (!self.lowLatencyMousePipeline) {
+        return NO;
+    }
     MouseDriverMode mode = [self mouseDriverMode];
     return mode == MouseDriverModeRawHID || (mode == MouseDriverModeAppKit && self.parsecMouseMode);
 }
 
 - (BOOL)parsecMouseMode {
     return [SettingsClass parsecMouseModeFor:self.host.uuid];
+}
+
+- (BOOL)lowLatencyMousePipeline {
+    return [SettingsClass lowLatencyMousePipelineFor:self.host.uuid];
 }
 
 - (MouseDriverMode)mouseDriverMode {

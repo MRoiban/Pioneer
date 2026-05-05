@@ -277,7 +277,7 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION originalOpusC
     want.freq = opusConfig.sampleRate;
     want.format = AUDIO_S16SYS;
     want.channels = opusConfig.channelCount;
-    want.samples = opusConfig.samplesPerFrame;
+    want.samples = 2048; // ~42ms at 48kHz; old AudioQueue used 80ms — keep enough margin for jitter
 
     audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audioDevice == 0) {
@@ -373,12 +373,13 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         }
         atomic_fetch_add_explicit(&audioDecodedPackets, 1, memory_order_relaxed);
 
-        while (audioFrameSize != 0 && SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize > SDL_AUDIO_THROTTLE_FRAMES) {
-            UpdateAtomicMaxInt(&audioMaxQueuedFrames, AudioQueuedBuffers());
-            atomic_fetch_add_explicit(&audioThrottleSleeps, 1, memory_order_relaxed);
-            SDL_Delay(1);
+        int queuedFrames = (audioFrameSize != 0) ? (int)(SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize) : 0;
+        UpdateAtomicMaxInt(&audioMaxQueuedFrames, queuedFrames);
+        if (queuedFrames > SDL_AUDIO_THROTTLE_FRAMES) {
+            atomic_fetch_add_explicit(&audioRingDrops, 1, memory_order_relaxed);
+            LogAudioDiagnosticsIfNeeded();
+            return;
         }
-        UpdateAtomicMaxInt(&audioMaxQueuedFrames, AudioQueuedBuffers());
 
         if (SDL_QueueAudio(audioDevice, audioBuffer, sizeof(short) * decodeLen * channelCount) < 0) {
             atomic_fetch_add_explicit(&audioOutputUnderruns, 1, memory_order_relaxed);
@@ -582,7 +583,7 @@ void ClCursorState(uint8_t version, uint8_t flags, uint32_t sequence,
     _arCallbacks.init = ArInit;
     _arCallbacks.cleanup = ArCleanup;
     _arCallbacks.decodeAndPlaySample = ArDecodeAndPlaySample;
-    _arCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION;
+    _arCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION;
 
     LiInitializeConnectionCallbacks(&_clCallbacks);
     _clCallbacks.stageStarting = ClStageStarting;

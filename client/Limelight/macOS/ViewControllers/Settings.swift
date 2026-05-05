@@ -41,7 +41,8 @@ struct Settings: Encodable, Decodable {
     let parsecMouseIdleHostCorrection: Bool?
     let parsecMouseDeltaAccumulatedVisibleCursor: Bool?
     let audioDiagnosticsEnabled: Bool?
-    
+    let lowLatencyMousePipeline: Bool?
+
     let emulateGuide: Bool
     let windowsCtrlSource: Int?
     let windowsShiftSource: Int?
@@ -103,6 +104,7 @@ class SettingsClass: NSObject {
                     "parsecMouseIdleHostCorrection": settings.parsecMouseIdleHostCorrection ?? SettingsModel.defaultParsecMouseIdleHostCorrection,
                     "parsecMouseDeltaAccumulatedVisibleCursor": settings.parsecMouseDeltaAccumulatedVisibleCursor ?? SettingsModel.defaultParsecMouseDeltaAccumulatedVisibleCursor,
                     "audioDiagnosticsEnabled": settings.audioDiagnosticsEnabled ?? SettingsModel.defaultAudioDiagnosticsEnabled,
+                    "lowLatencyMousePipeline": settings.lowLatencyMousePipeline ?? SettingsModel.defaultLowLatencyMousePipeline,
                     "emulateGuide": settings.emulateGuide,
                     "windowsCtrlSource": settings.windowsCtrlSource ?? SettingsModel.defaultWindowsCtrlSourceIndex,
                     "windowsShiftSource": settings.windowsShiftSource ?? SettingsModel.defaultWindowsShiftSourceIndex,
@@ -300,6 +302,14 @@ class SettingsClass: NSObject {
         }
 
         return SettingsModel.defaultAudioDiagnosticsEnabled
+    }
+
+    @objc static func lowLatencyMousePipeline(for key: String) -> Bool {
+        if let settings = Settings.getSettings(for: key) {
+            return settings.lowLatencyMousePipeline ?? SettingsModel.defaultLowLatencyMousePipeline
+        }
+
+        return SettingsModel.defaultLowLatencyMousePipeline
     }
 
     @objc static func appArtworkDimensions(for key: String) -> CGSize {

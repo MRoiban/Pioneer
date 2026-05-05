@@ -214,6 +214,11 @@ class SettingsModel: ObservableObject {
             saveSettings()
         }
     }
+    @Published var lowLatencyMousePipeline: Bool {
+        didSet {
+            saveSettings()
+        }
+    }
 
     @Published var emulateGuide: Bool {
         didSet {
@@ -360,6 +365,7 @@ class SettingsModel: ObservableObject {
     static let defaultParsecMouseIdleHostCorrection = true
     static let defaultParsecMouseDeltaAccumulatedVisibleCursor = true
     static let defaultAudioDiagnosticsEnabled = false
+    static let defaultLowLatencyMousePipeline = true
     static let defaultEmulateGuide = false
     static let defaultWindowsCtrlSource = "Control"
     static let defaultWindowsShiftSource = "Shift"
@@ -516,7 +522,8 @@ class SettingsModel: ObservableObject {
         parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
         parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
         audioDiagnosticsEnabled = Self.defaultAudioDiagnosticsEnabled
-        
+        lowLatencyMousePipeline = Self.defaultLowLatencyMousePipeline
+
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
         selectedWindowsShiftSource = Self.defaultWindowsShiftSource
@@ -526,7 +533,7 @@ class SettingsModel: ObservableObject {
         appArtworkHeight = Self.defaultAppArtworkHeight
         dimNonHoveredArtwork = Self.defaultDimNonHoveredArtwork
     }
-    
+
     func loadDefaultSettings() {
         selectedResolution = Self.defaultResolution
         customResWidth = Self.defaultCustomResWidth
@@ -566,7 +573,8 @@ class SettingsModel: ObservableObject {
         parsecMouseIdleHostCorrection = Self.defaultParsecMouseIdleHostCorrection
         parsecMouseDeltaAccumulatedVisibleCursor = Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
         audioDiagnosticsEnabled = Self.defaultAudioDiagnosticsEnabled
-        
+        lowLatencyMousePipeline = Self.defaultLowLatencyMousePipeline
+
         emulateGuide = Self.defaultEmulateGuide
         selectedWindowsCtrlSource = Self.defaultWindowsCtrlSource
         selectedWindowsShiftSource = Self.defaultWindowsShiftSource
@@ -576,7 +584,7 @@ class SettingsModel: ObservableObject {
         appArtworkHeight = Self.defaultAppArtworkHeight
         dimNonHoveredArtwork = Self.defaultDimNonHoveredArtwork
     }
-    
+
     func loadAndSaveDefaultSettings() {
         loadDefaultSettings()
         saveSettings()
@@ -644,7 +652,8 @@ class SettingsModel: ObservableObject {
                 parsecMouseIdleHostCorrection = settings.parsecMouseIdleHostCorrection ?? Self.defaultParsecMouseIdleHostCorrection
                 parsecMouseDeltaAccumulatedVisibleCursor = settings.parsecMouseDeltaAccumulatedVisibleCursor ?? Self.defaultParsecMouseDeltaAccumulatedVisibleCursor
                 audioDiagnosticsEnabled = settings.audioDiagnosticsEnabled ?? Self.defaultAudioDiagnosticsEnabled
-                
+                lowLatencyMousePipeline = settings.lowLatencyMousePipeline ?? Self.defaultLowLatencyMousePipeline
+
                 emulateGuide = settings.emulateGuide
                 selectedWindowsCtrlSource = Self.getString(from: settings.windowsCtrlSource ?? Self.defaultWindowsCtrlSourceIndex, in: Self.keyboardModifierSources)
                 selectedWindowsShiftSource = Self.getString(from: settings.windowsShiftSource ?? Self.defaultWindowsShiftSourceIndex, in: Self.keyboardModifierSources)
@@ -752,6 +761,7 @@ class SettingsModel: ObservableObject {
             parsecMouseIdleHostCorrection: parsecMouseIdleHostCorrection,
             parsecMouseDeltaAccumulatedVisibleCursor: parsecMouseDeltaAccumulatedVisibleCursor,
             audioDiagnosticsEnabled: audioDiagnosticsEnabled,
+            lowLatencyMousePipeline: lowLatencyMousePipeline,
             emulateGuide: emulateGuide,
             windowsCtrlSource: windowsCtrlSource,
             windowsShiftSource: windowsShiftSource,

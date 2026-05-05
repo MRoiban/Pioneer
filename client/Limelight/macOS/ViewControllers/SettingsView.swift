@@ -808,6 +808,13 @@ struct DebugView: View {
                 Spacer()
                     .frame(height: 32)
 
+                FormSection(title: "Mouse Pipeline") {
+                    ToggleCell(title: "Low-Latency Mouse Pipeline", boolBinding: $settingsModel.lowLatencyMousePipeline)
+                }
+
+                Spacer()
+                    .frame(height: 32)
+
                 FormSection(title: "Diagnostics") {
                     ToggleCell(title: "Audio Diagnostics Logging", boolBinding: $settingsModel.audioDiagnosticsEnabled)
                 }

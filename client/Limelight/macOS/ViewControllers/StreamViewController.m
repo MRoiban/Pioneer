@@ -353,11 +353,11 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     }
     if (self.parsecPositionQueue == nil) {
         dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
-                                                                              QOS_CLASS_USER_INTERACTIVE, 0);
+                                                                              QOS_CLASS_USER_INITIATED, 0);
         self.parsecPositionQueue = dispatch_queue_create("com.moonlight-stream.parsecPositionQueue", attr);
     }
     self.parsecPositionTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.parsecPositionQueue);
-    uint64_t intervalNs = 2 * NSEC_PER_MSEC; // ~500Hz
+    uint64_t intervalNs = 8 * NSEC_PER_MSEC; // ~125Hz
     dispatch_source_set_timer(self.parsecPositionTimer,
                               dispatch_time(DISPATCH_TIME_NOW, intervalNs),
                               intervalNs,
@@ -972,12 +972,13 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     streamConfig.optimizeGameSettings = streamSettings.optimizeGames;
     streamConfig.playAudioOnPC = streamSettings.playAudioOnPC;
     streamConfig.allowHevc = streamSettings.useHevc;
-    streamConfig.cursorFeedback = [SettingsClass parsecMouseModeFor:self.app.host.uuid];
+    BOOL lowLatencyPipeline = [SettingsClass lowLatencyMousePipelineFor:self.app.host.uuid];
+    streamConfig.cursorFeedback = lowLatencyPipeline && [SettingsClass parsecMouseModeFor:self.app.host.uuid];
     streamConfig.enableHdr = streamSettings.useHevc && VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? streamSettings.enableHdr : NO;
 
     streamConfig.multiController = streamSettings.multiController;
     streamConfig.gamepadMask = self.useSystemControllerDriver ? [ControllerSupport getConnectedGamepadMask:streamConfig] : 1;
-    
+
     streamConfig.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
 
     if (self.useSystemControllerDriver) {
@@ -986,10 +987,12 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         }
     }
     self.hidSupport = [[HIDSupport alloc] init:self.app.host];
-    __weak typeof(self) weakSelf = self;
-    self.hidSupport.localMouseDeltaHandler = ^(double deltaX, double deltaY) {
-        [weakSelf moveLocalParsecCursorWithDeltaX:deltaX deltaY:deltaY];
-    };
+    if (lowLatencyPipeline) {
+        __weak typeof(self) weakSelf = self;
+        self.hidSupport.localMouseDeltaHandler = ^(double deltaX, double deltaY) {
+            [weakSelf moveLocalParsecCursorWithDeltaX:deltaX deltaY:deltaY];
+        };
+    }
     self.parsecMouseMode = streamConfig.cursorFeedback;
     self.parsecRelativeMouseMode = !self.parsecMouseMode;
     self.parsecManualMouseOverride = NO;
