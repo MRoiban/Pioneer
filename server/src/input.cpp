@@ -890,11 +890,13 @@ namespace input {
 
     auto id = alloc_id(gamepadMask);
     if (id < 0) {
+      BOOST_LOG(warning) << "No free gamepad slots (gamepadMask full) for controller arrival ["sv << (uint32_t) packet->controllerNumber << ']';
       return;
     }
 
-    // Allocate a new gamepad
+    BOOST_LOG(debug) << "Allocating gamepad slot ["sv << id << "] for controller arrival ["sv << (uint32_t) packet->controllerNumber << ']';
     if (platf::alloc_gamepad(platf_input, {id, packet->controllerNumber}, arrival, input->feedback_queue)) {
+      BOOST_LOG(warning) << "alloc_gamepad failed for slot ["sv << id << "] controller arrival ["sv << (uint32_t) packet->controllerNumber << ']';
       free_id(gamepadMask, id);
       return;
     }
@@ -1144,10 +1146,13 @@ namespace input {
     if ((packet->activeGamepadMask & (1 << packet->controllerNumber)) && gamepad.id < 0) {
       auto id = alloc_id(gamepadMask);
       if (id < 0) {
+        BOOST_LOG(warning) << "No free gamepad slots (gamepadMask full) for controller ["sv << packet->controllerNumber << ']';
         return;
       }
 
+      BOOST_LOG(debug) << "Allocating gamepad slot ["sv << id << "] for controller ["sv << packet->controllerNumber << ']';
       if (platf::alloc_gamepad(platf_input, {id, (uint8_t) packet->controllerNumber}, {}, input->feedback_queue)) {
+        BOOST_LOG(warning) << "alloc_gamepad failed for slot ["sv << id << "] controller ["sv << packet->controllerNumber << ']';
         free_id(gamepadMask, id);
         return;
       }

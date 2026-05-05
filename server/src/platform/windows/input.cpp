@@ -1774,8 +1774,6 @@ namespace platf {
       BOOST_LOG(warning) << "Touch input requires Windows 10 1809 or later"sv;
     }
 
-    caps |= platform_caps::cursor_feedback;
-
     return caps;
   }
 }  // namespace platf
