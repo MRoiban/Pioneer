@@ -43,6 +43,7 @@
 @property (nonatomic, strong) id windowDidResignKeyNotification;
 @property (nonatomic, strong) id windowDidBecomeKeyNotification;
 @property (nonatomic, strong) id windowWillCloseNotification;
+@property (nonatomic, strong) id keyboardEventMonitor;
 @property (nonatomic) int cursorHiddenCounter;
 @property (nonatomic) BOOL awdlDisablerStarted;
 @property (nonatomic) BOOL parsecMouseMode;
@@ -92,6 +93,10 @@
     [self prepareForStreaming];
     
     __weak typeof(self) weakSelf = self;
+
+    self.keyboardEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged) handler:^NSEvent * _Nullable(NSEvent *event) {
+        return [weakSelf handleLocalKeyboardEvent:event];
+    }];
 
     self.windowDidExitFullScreenNotification = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidExitFullScreenNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
         if ([weakSelf isOurWindowTheWindowInNotiifcation:note]) {
@@ -175,6 +180,7 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self.windowDidResignKeyNotification];
     [[NSNotificationCenter defaultCenter] removeObserver:self.windowDidBecomeKeyNotification];
     [[NSNotificationCenter defaultCenter] removeObserver:self.windowWillCloseNotification];
+    [NSEvent removeMonitor:self.keyboardEventMonitor];
 
     [self stopParsecCursorDisplayLink];
     [self stopParsecPositionSender];
@@ -511,6 +517,38 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
 
 #pragma mark - KeyboardNotifiable
 
+- (NSEvent *)handleLocalKeyboardEvent:(NSEvent *)event {
+    NSWindow *window = self.view.window;
+    if (window == nil || !window.isKeyWindow || ![self isWindowFullscreen]) {
+        return event;
+    }
+    if (event.window != nil && event.window != window) {
+        return event;
+    }
+
+    switch (event.type) {
+        case NSEventTypeKeyDown:
+            if ([self handleStreamExitHotkey:event] ||
+                [self handleParsecMouseOverrideHotkey:event] ||
+                [self handleStatsOverlayHotkey:event]) {
+                return nil;
+            }
+            [self.hidSupport keyDown:event];
+            return nil;
+
+        case NSEventTypeKeyUp:
+            [self.hidSupport keyUp:event];
+            return nil;
+
+        case NSEventTypeFlagsChanged:
+            [self flagsChanged:event];
+            return nil;
+
+        default:
+            return event;
+    }
+}
+
 - (BOOL)onKeyboardEquivalent:(NSEvent *)event {
     const NSEventModifierFlags modifierFlags = NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
     const NSEventModifierFlags eventModifierFlags = event.modifierFlags & modifierFlags;
@@ -522,6 +560,12 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         return YES;
     }
     if ([self handleStatsOverlayHotkey:event]) {
+        return YES;
+    }
+
+    if ([self isWindowFullscreen]) {
+        [self.hidSupport keyDown:event];
+        [self.hidSupport keyUp:event];
         return YES;
     }
 
