@@ -24,6 +24,8 @@ namespace input {
 
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
 
+  bool add_mouse_delta(short a, short b, short &sum);
+
   struct touch_port_t: public platf::touch_port_t {
     int env_width;
     int env_height;

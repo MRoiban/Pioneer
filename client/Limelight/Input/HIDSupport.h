@@ -15,6 +15,7 @@
 @property (atomic) TemporaryHost *host;
 @property (nonatomic, readonly) BOOL rawHIDMouseActive;
 @property (nonatomic, readonly) BOOL rawHIDMouseRequested;
+@property (nonatomic, readonly) BOOL localMouseDeltaSourceActive;
 @property (nonatomic, copy) void (^localMouseDeltaHandler)(double deltaX, double deltaY);
 
 - (instancetype)init:(TemporaryHost *)host;

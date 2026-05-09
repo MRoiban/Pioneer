@@ -59,6 +59,7 @@
 @property (nonatomic) BOOL parsecMouseDeltaAccumulatedVisibleCursor;
 @property (nonatomic) BOOL parsecCursorFeedbackReceived;
 @property (nonatomic) BOOL parsecCursorImageReceived;
+@property (nonatomic) uint32_t parsecLastCursorStateSequence;
 @property (nonatomic) CFAbsoluteTime parsecLastLocalMoveTime;
 @property (nonatomic) NSPoint parsecLastLocalCursorPoint;
 @property (nonatomic) NSPoint parsecLocalDisplayCursorPoint;
@@ -295,6 +296,20 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     return NSMakePoint(MAX(0, MIN(width, viewPoint.x)),
                        MAX(0, MIN(height, viewPoint.y)));
+}
+
+- (BOOL)isParsecCursorSequenceNewer:(uint32_t)sequence {
+    if (self.parsecLastCursorStateSequence == 0) {
+        self.parsecLastCursorStateSequence = sequence;
+        return YES;
+    }
+
+    if ((int32_t)(sequence - self.parsecLastCursorStateSequence) <= 0) {
+        return NO;
+    }
+
+    self.parsecLastCursorStateSequence = sequence;
+    return YES;
 }
 
 - (void)moveLocalParsecCursorWithEvent:(NSEvent *)event absoluteViewPoint:(NSPoint)absoluteViewPoint {
@@ -751,7 +766,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     if (self.parsecMouseEventDrivenPosition) {
         [self sendParsecPositionAtViewPoint:absoluteViewPoint];
     }
-    if (self.parsecMouseClientAuthoritativeCursor) {
+    if (self.parsecMouseClientAuthoritativeCursor && !self.hidSupport.localMouseDeltaSourceActive) {
         [self moveLocalParsecCursorWithEvent:event absoluteViewPoint:absoluteViewPoint];
     }
 
@@ -1042,6 +1057,7 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
     self.parsecManualMouseOverride = NO;
     self.parsecCursorFeedbackReceived = NO;
     self.parsecCursorImageReceived = NO;
+    self.parsecLastCursorStateSequence = 0;
     self.parsecMouseShortcutKeyCode = [SettingsClass parsecMouseShortcutKeyCodeFor:self.app.host.uuid];
     self.parsecMouseShortcutModifierFlags = [SettingsClass parsecMouseShortcutModifierFlagsFor:self.app.host.uuid];
     self.streamExitShortcutKeyCode = [SettingsClass streamExitShortcutKeyCodeFor:self.app.host.uuid];
@@ -1114,6 +1130,9 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
                 if (!self.parsecCursorFeedbackReceived) {
                     Log(LOG_W, @"Parsec Mouse Mode is enabled, but no Sunshine cursor feedback packets were received. Confirm the Windows Sunshine fork is running and the host was restarted after building it.");
                     [self.streamView showDebugMessage:@"No Sunshine cursor feedback received" duration:6];
+                    if (self.parsecMouseMode && !self.parsecManualMouseOverride) {
+                        [self setParsecRelativeMouseMode:YES];
+                    }
                 }
             });
         }
@@ -1154,85 +1173,105 @@ static CVReturn parsecCursorDisplayLinkCallback(CVDisplayLinkRef displayLink,
         return;
     }
 
+    NSData *imageBytes = imageByteLength != 0 && imageData != NULL ? [NSData dataWithBytes:imageData length:imageByteLength] : nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self handleCursorStateWithVersion:version flags:flags sequence:sequence x:x y:y
+                                  clipLeft:clipLeft clipTop:clipTop clipRight:clipRight clipBottom:clipBottom
+                                     width:width height:height hotspotX:hotspotX hotspotY:hotspotY
+                                cursorHash:cursorHash imageBytes:imageBytes];
+    });
+}
+
+- (void)handleCursorStateWithVersion:(uint8_t)version flags:(uint8_t)flags sequence:(uint32_t)sequence x:(int32_t)x y:(int32_t)y clipLeft:(int32_t)clipLeft clipTop:(int32_t)clipTop clipRight:(int32_t)clipRight clipBottom:(int32_t)clipBottom width:(uint16_t)width height:(uint16_t)height hotspotX:(uint16_t)hotspotX hotspotY:(uint16_t)hotspotY cursorHash:(uint32_t)cursorHash imageBytes:(NSData *)imageBytes {
+    if (!self.parsecMouseMode || version != 1) {
+        return;
+    }
+
     BOOL relativeMode = (flags & LI_CURSOR_FLAG_RELATIVE_MODE) != 0;
     BOOL visible = (flags & LI_CURSOR_FLAG_VISIBLE) != 0;
-    BOOL imageIncluded = (flags & LI_CURSOR_FLAG_IMAGE_INCLUDED) != 0;
+    BOOL imageIncluded = (flags & LI_CURSOR_FLAG_IMAGE_INCLUDED) != 0 && imageBytes.length != 0;
+    BOOL sequenceIsNewer = [self isParsecCursorSequenceNewer:sequence];
+    if (!sequenceIsNewer && !imageIncluded) {
+        return;
+    }
+
     if (!self.parsecCursorFeedbackReceived) {
         self.parsecCursorFeedbackReceived = YES;
         Log(LOG_I, @"Received first Sunshine cursor feedback packet. flags=0x%02x relative=%d visible=%d", flags, relativeMode, visible);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.streamView showDebugMessage:@"Sunshine cursor feedback active" duration:3];
-        });
+        [self.streamView showDebugMessage:@"Sunshine cursor feedback active" duration:3];
     }
     if (imageIncluded && !self.parsecCursorImageReceived) {
         self.parsecCursorImageReceived = YES;
-        Log(LOG_I, @"Received first Sunshine cursor image. %ux%u bytes=%u hash=%u", width, height, imageByteLength, cursorHash);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.streamView showDebugMessage:@"Host cursor image received" duration:3];
-        });
+        Log(LOG_I, @"Received first Sunshine cursor image. %ux%u bytes=%lu hash=%u", width, height, (unsigned long)imageBytes.length, cursorHash);
+        [self.streamView showDebugMessage:@"Host cursor image received" duration:3];
     }
-    NSImage *cursorImage = imageIncluded ? [self hostCursorImageWithBGRAData:imageData width:width height:height imageByteLength:imageByteLength] : nil;
+    NSImage *cursorImage = imageIncluded ? [self hostCursorImageWithBGRAData:imageBytes.bytes width:width height:height imageByteLength:(uint32_t)imageBytes.length] : nil;
     NSPoint hostCursorPoint = [self localPointForHostCursorX:x y:y clipLeft:clipLeft clipTop:clipTop clipRight:clipRight clipBottom:clipBottom flags:flags];
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGFloat scale = self.view.window.backingScaleFactor ?: 1.0;
-        if (cursorImage != nil) {
-            cursorImage.size = NSMakeSize(width / scale, height / scale);
-        }
-        NSPoint hotspot = NSMakePoint(hotspotX / scale, hotspotY / scale);
+    struct Resolution resolution = [self.class getResolution];
+    CGFloat scaleX = resolution.width > 0 ? self.view.bounds.size.width / resolution.width : 1.0;
+    CGFloat scaleY = resolution.height > 0 ? self.view.bounds.size.height / resolution.height : 1.0;
+    CGFloat cursorScale = MIN(MAX(scaleX, 0.01), MAX(scaleY, 0.01));
+    if (cursorImage != nil) {
+        cursorImage.size = NSMakeSize(width * cursorScale, height * cursorScale);
+    }
+    NSPoint hotspot = NSMakePoint(hotspotX * cursorScale, hotspotY * cursorScale);
 
-        if (!self.parsecManualMouseOverride) {
-            [self setParsecRelativeMouseMode:relativeMode];
+    if (!self.parsecManualMouseOverride) {
+        [self setParsecRelativeMouseMode:relativeMode];
+    }
+    BOOL displayedRelativeMode = self.parsecManualMouseOverride ? self.parsecRelativeMouseMode : relativeMode;
+    if (cursorImage != nil) {
+        [self.streamView updateHostCursorImage:cursorImage hotspot:hotspot visible:visible && !displayedRelativeMode];
+        if (visible && !displayedRelativeMode && self.cursorHiddenCounter == 0) {
+            [NSCursor hide];
+            self.cursorHiddenCounter ++;
         }
-        BOOL displayedRelativeMode = self.parsecManualMouseOverride ? self.parsecRelativeMouseMode : relativeMode;
-        if (cursorImage != nil) {
-            [self.streamView updateHostCursorImage:cursorImage hotspot:hotspot visible:visible && !displayedRelativeMode];
-            if (visible && !displayedRelativeMode && self.cursorHiddenCounter == 0) {
-                [NSCursor hide];
-                self.cursorHiddenCounter ++;
-            }
-        }
-        CFAbsoluteTime nowTime = CFAbsoluteTimeGetCurrent();
-        BOOL recentLocalMove = (nowTime - self.parsecLastLocalMoveTime) < 0.35;
-        if (displayedRelativeMode) {
+    }
+    if (!sequenceIsNewer) {
+        return;
+    }
+
+    CFAbsoluteTime nowTime = CFAbsoluteTimeGetCurrent();
+    BOOL recentLocalMove = (nowTime - self.parsecLastLocalMoveTime) < 0.35;
+    if (displayedRelativeMode) {
+        self.parsecLocalDisplayCursorValid = YES;
+        self.parsecLocalDisplayCursorPoint = hostCursorPoint;
+        self.parsecLastLocalCursorPoint = hostCursorPoint;
+        [self.streamView moveHostCursorToPoint:hostCursorPoint];
+    } else if (self.parsecMouseClientAuthoritativeCursor) {
+        NSPoint localDisplayPoint = self.parsecLocalDisplayCursorValid ? self.parsecLocalDisplayCursorPoint : self.parsecLastLocalCursorPoint;
+        CGFloat dx = hostCursorPoint.x - localDisplayPoint.x;
+        CGFloat dy = hostCursorPoint.y - localDisplayPoint.y;
+        CGFloat err = sqrt(dx * dx + dy * dy);
+        if (!recentLocalMove && self.parsecMouseIdleHostCorrection && err > 0.5) {
             self.parsecLocalDisplayCursorValid = YES;
             self.parsecLocalDisplayCursorPoint = hostCursorPoint;
             self.parsecLastLocalCursorPoint = hostCursorPoint;
             [self.streamView moveHostCursorToPoint:hostCursorPoint];
-        } else if (self.parsecMouseClientAuthoritativeCursor) {
-            NSPoint localDisplayPoint = self.parsecLocalDisplayCursorValid ? self.parsecLocalDisplayCursorPoint : self.parsecLastLocalCursorPoint;
-            CGFloat dx = hostCursorPoint.x - localDisplayPoint.x;
-            CGFloat dy = hostCursorPoint.y - localDisplayPoint.y;
-            CGFloat err = sqrt(dx * dx + dy * dy);
-            if (!recentLocalMove && self.parsecMouseIdleHostCorrection && err > 0.5) {
-                self.parsecLocalDisplayCursorValid = YES;
-                self.parsecLocalDisplayCursorPoint = hostCursorPoint;
-                self.parsecLastLocalCursorPoint = hostCursorPoint;
-                [self.streamView moveHostCursorToPoint:hostCursorPoint];
-            } else if (err > 200.0) {
-                self.parsecLocalDisplayCursorValid = YES;
-                self.parsecLocalDisplayCursorPoint = hostCursorPoint;
-                self.parsecLastLocalCursorPoint = hostCursorPoint;
-                [self.streamView moveHostCursorToPoint:hostCursorPoint];
-            }
-        } else {
-            CGFloat dx = hostCursorPoint.x - self.parsecLastLocalCursorPoint.x;
-            CGFloat dy = hostCursorPoint.y - self.parsecLastLocalCursorPoint.y;
-            CGFloat err = sqrt(dx * dx + dy * dy);
-            const CGFloat snapThreshold = 80.0;
-            const CGFloat smoothFactor = 0.30;
-            if (!recentLocalMove || err > snapThreshold) {
-                self.parsecLastLocalCursorPoint = hostCursorPoint;
-                [self.streamView moveHostCursorToPoint:hostCursorPoint];
-            } else if (err > 0.5) {
-                NSPoint blended = NSMakePoint(self.parsecLastLocalCursorPoint.x + dx * smoothFactor,
-                                              self.parsecLastLocalCursorPoint.y + dy * smoothFactor);
-                self.parsecLastLocalCursorPoint = blended;
-                [self.streamView moveHostCursorToPoint:blended];
-            }
+        } else if (err > 200.0) {
+            self.parsecLocalDisplayCursorValid = YES;
+            self.parsecLocalDisplayCursorPoint = hostCursorPoint;
+            self.parsecLastLocalCursorPoint = hostCursorPoint;
+            [self.streamView moveHostCursorToPoint:hostCursorPoint];
         }
-        [self.streamView setHostCursorVisible:visible && !displayedRelativeMode];
-    });
+    } else {
+        CGFloat dx = hostCursorPoint.x - self.parsecLastLocalCursorPoint.x;
+        CGFloat dy = hostCursorPoint.y - self.parsecLastLocalCursorPoint.y;
+        CGFloat err = sqrt(dx * dx + dy * dy);
+        const CGFloat snapThreshold = 80.0;
+        const CGFloat smoothFactor = 0.30;
+        if (!recentLocalMove || err > snapThreshold) {
+            self.parsecLastLocalCursorPoint = hostCursorPoint;
+            [self.streamView moveHostCursorToPoint:hostCursorPoint];
+        } else if (err > 0.5) {
+            NSPoint blended = NSMakePoint(self.parsecLastLocalCursorPoint.x + dx * smoothFactor,
+                                          self.parsecLastLocalCursorPoint.y + dy * smoothFactor);
+            self.parsecLastLocalCursorPoint = blended;
+            [self.streamView moveHostCursorToPoint:blended];
+        }
+    }
+    [self.streamView setHostCursorVisible:visible && !displayedRelativeMode];
 }
 
 

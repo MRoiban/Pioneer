@@ -346,8 +346,8 @@ namespace stream {
       _map_type_cb.emplace(type, std::move(cb));
     }
 
-    int send(const std::string_view &payload, net::peer_t peer) {
-      auto packet = enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
+    int send(const std::string_view &payload, net::peer_t peer, enet_uint32 flags = ENET_PACKET_FLAG_RELIABLE) {
+      auto packet = enet_packet_create(payload.data(), payload.size(), flags);
       if (enet_peer_send(peer, 0, packet)) {
         enet_packet_destroy(packet);
 
@@ -1226,7 +1226,8 @@ namespace stream {
     std::vector<std::uint8_t> encrypted_payload;
 
     auto payload = encode_control(session, std::string_view {(char *) plaintext_payload.data(), plaintext_payload.size()}, encrypted_payload);
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+    enet_uint32 send_flags = plaintext.imageByteLength != 0 ? ENET_PACKET_FLAG_RELIABLE : 0;
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer, send_flags)) {
       TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
       BOOST_LOG(warning) << "Couldn't send cursor state to ["sv << addr << ':' << port << ']';
       return -1;

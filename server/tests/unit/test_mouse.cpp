@@ -4,7 +4,29 @@
  */
 #include "../tests_common.h"
 
+#include <cstdint>
+
 #include <src/input.h>
+
+TEST(MouseBatchingTests, AddMouseDeltaAllowsInRangeSums) {
+  short sum = 0;
+
+  EXPECT_TRUE(input::add_mouse_delta(120, -45, sum));
+  EXPECT_EQ(sum, 75);
+
+  EXPECT_TRUE(input::add_mouse_delta(INT16_MAX - 1, 1, sum));
+  EXPECT_EQ(sum, INT16_MAX);
+
+  EXPECT_TRUE(input::add_mouse_delta(INT16_MIN + 1, -1, sum));
+  EXPECT_EQ(sum, INT16_MIN);
+}
+
+TEST(MouseBatchingTests, AddMouseDeltaRejectsOverflow) {
+  short sum = 0;
+
+  EXPECT_FALSE(input::add_mouse_delta(INT16_MAX, 1, sum));
+  EXPECT_FALSE(input::add_mouse_delta(INT16_MIN, -1, sum));
+}
 
 struct MouseHIDTest: PlatformTestSuite, testing::WithParamInterface<util::point_t> {
   void SetUp() override {

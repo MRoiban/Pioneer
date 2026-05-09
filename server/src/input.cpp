@@ -1252,6 +1252,10 @@ namespace input {
     terminate_batch,  ///< Stop trying to batch with this entry
   };
 
+  bool add_mouse_delta(short a, short b, short &sum) {
+    return !__builtin_add_overflow(a, b, &sum);
+  }
+
   /**
    * @brief Batch two relative mouse messages.
    * @param dest The original packet to batch into.
@@ -1263,10 +1267,10 @@ namespace input {
     short deltaY;
 
     // Batching is safe as long as the result doesn't overflow a 16-bit integer
-    if (!__builtin_add_overflow(util::endian::big(dest->deltaX), util::endian::big(src->deltaX), &deltaX)) {
+    if (!add_mouse_delta(util::endian::big(dest->deltaX), util::endian::big(src->deltaX), deltaX)) {
       return batch_result_e::terminate_batch;
     }
-    if (!__builtin_add_overflow(util::endian::big(dest->deltaY), util::endian::big(src->deltaY), &deltaY)) {
+    if (!add_mouse_delta(util::endian::big(dest->deltaY), util::endian::big(src->deltaY), deltaY)) {
       return batch_result_e::terminate_batch;
     }
 

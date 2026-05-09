@@ -1475,6 +1475,10 @@ static CVReturn displayLinkOutputCallback(CVDisplayLinkRef displayLink,
     return self.wantsRawHIDMouse;
 }
 
+- (BOOL)localMouseDeltaSourceActive {
+    return self.useRawHIDMouse || self.useGCMouse;
+}
+
 - (BOOL)wantsRawHIDMouse {
     if (!self.lowLatencyMousePipeline) {
         return NO;

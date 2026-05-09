@@ -8,6 +8,10 @@ project(Sunshine VERSION 0.0.0
         DESCRIPTION "Self-hosted game stream host for Moonlight"
         HOMEPAGE_URL "https://app.lizardbyte.dev/Sunshine")
 
+if(NOT WIN32)
+    message(FATAL_ERROR "This monorepo only supports building the Sunshine server on Windows. Build server/ on the target Windows host.")
+endif()
+
 set(PROJECT_LICENSE "GPL-3.0-only")
 
 set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
